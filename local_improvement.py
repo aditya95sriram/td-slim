@@ -7,8 +7,14 @@ import satencoding
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
 import matplotlib.pyplot as plt
+from time import time
 
+RANDOM_SEED = 3
+LOGGING = False
+SAVEFIG = False
+FIGCOUNTER = 0
 
+if LOGGING: import wandb
 # utility functions
 
 def first(obj):
@@ -28,16 +34,17 @@ def find_depth(dtree, root, return_deepest=False):
     """
     find the depth of a tree (directed or undirected)
     fails if there are directed or undirected cycles
+    also accounts for weights if they exist
     """
     maxdepth = 0
     deepest = None
     queue = [(root, 1)]
     while queue:
         node, depth = queue.pop(0)
-        if depth > maxdepth:
-            maxdepth = depth
+        nodeweight = dtree.nodes[node].get("weight", 0)
+        if depth + nodeweight > maxdepth:
+            maxdepth = depth + nodeweight
             deepest = node
-        maxdepth = max(maxdepth, depth)
         for child in dtree.neighbors(node):
             queue.append((child, depth+1))
     if return_deepest:
@@ -79,10 +86,21 @@ class TD(object):
         else:
             self.graph = None
 
-    def draw(self, attr="weight", default=0, highlight=None):
+    def reset(self):
+        """
+        reset internal variables to prepare for a new wave of local improvements
+        """
+        self.graph = self.original_graph.copy()
+        self.leaves = set()
+        self.contractions = []
+        self.forced_ancestries = set()
+
+    def draw(self, attr=None, default=0, highlight=None):
         """
         draws a decomposition as a directed graph, with the root colored red
         """
+        global FIGCOUNTER
+        FIGCOUNTER += 1
         graph = self.tree
         pos = graphviz_layout(graph, prog="dot")  # or nx.spring_layout
         # draw all nodes
@@ -97,12 +115,16 @@ class TD(object):
             nx.draw_networkx_nodes(graph, pos, node_color='g', nodelist=highlight)
         nx.draw_networkx_edges(graph, pos)
         # label vertices with index and weight
-        if attr:
+        if attr is not None:
             labels = dict((n, "{}:{}".format(n, d)) for n, d in graph.nodes.data(attr, default=default))
         else:
             labels = None
         nx.draw_networkx_labels(graph, pos, labels)
-        plt.show()
+        if SAVEFIG:
+            plt.savefig(f"figs/td_{FIGCOUNTER:03}.png", dpi=200)
+        else:
+            plt.show()
+        plt.close()
         # todo[aesthetic]: draw graph edges in gray
 
     def add_child(self, parent, child, **kwargs):
@@ -116,11 +138,11 @@ class TD(object):
         return first(self.tree.predecessors(child))  # todo[optional]: first -> only
 
     def copy(self):
-        """return (deep) copy of decomposition"""
-        tdcopy = TD(self.tree.copy(), self.graph, self.root, self.depth)
-        tdcopy.leaves = self.leaves.copy()
-        tdcopy.contractions = [(v, decomp.copy()) for v, decomp in self.contractions]
-        tdcopy.graph = None if self.graph is None else self.graph.copy()
+        """return copy of decomposition, does not copy contractions"""
+        tdcopy = TD(self.tree.copy(), self.original_graph, self.root, self.depth)
+        tdcopy.annotate_leaves()
+        # tdcopy.contractions = [(v, decomp.copy()) for v, decomp in self.contractions]
+        # tdcopy.graph = None if self.graph is None else self.graph.copy()
         return tdcopy
 
     def annotate_leaves(self):
@@ -140,8 +162,6 @@ class TD(object):
         while queue:
             node, depth = queue.pop(0)
             self.tree.nodes[node]["depth"] = depth
-            if node in self.leaves:  # don't go deeper than leaves
-                continue
             for child in self.tree.successors(node):
                 queue.append((child, depth + 1))
 
@@ -162,8 +182,6 @@ class TD(object):
             if debug: print("stack", stack)
             node = stack.pop()
             if debug: print("node", node)
-            if node in self.leaves:
-                continue
             # if "subtree" in data[node]:  # node already computed
             #     if debug: print("skipping", node)
             #     continue
@@ -196,8 +214,6 @@ class TD(object):
         while queue:
             node = queue.pop(0)
             desc.add(node)
-            if node in self.leaves:
-                continue
             for child in self.tree.successors(node):
                 queue.append(child)
         return desc
@@ -221,16 +237,18 @@ class TD(object):
                         break
         return None
 
-    def contract(self, root, local_decomp: 'TD', descendants):
+    def contract(self, local_decomp: 'TD', descendants):
         """
         contract subtree rooted at root into single vertex with weight
         desc is the set of descendants of root
         """
         # add root->subtree into self.contractions
         root = local_decomp.root
-        assert root is not None
+        assert root is not None, "root of local decomp is none"
+        # check if current root is in local instance
+        if self.root in descendants:
+            self.root = root  # update with new (possibly same) root
         self.contractions.append((root, local_decomp))
-        children = descendants - {root}
         # mark root as leaf
         self.leaves -= descendants
         self.leaves.add(root)
@@ -239,16 +257,21 @@ class TD(object):
         self.tree.nodes[root]["weight"] = weight
         self.graph.nodes[root]["weight"] = weight
         # update self.graph with contractions
-        for child in children:
+        for child in descendants - {root}:
             outside_neighbors = set(self.graph.neighbors(child)) - descendants
             for out_nbr in outside_neighbors:
                 self.forced_ancestries.add((out_nbr, root))
-                # todo[analyze,exp] see if some forced ancestries can be removed/transferred directly
+                # todo[analyze,req] see if some forced ancestries can be removed/transferred directly
             self.graph = nx.contracted_nodes(self.graph, root, child, self_loops=False)
             self.tree = nx.contracted_nodes(self.tree, root, child, self_loops=False)
 
+    def find_deepest_leaf(self):
+        path_lengths = nx.single_source_dijkstra_path_length(self.tree, self.root)
+        return max(path_lengths, key=path_lengths.get)
+
     def find_weighted_star(self):
-        leaf = first(self.leaves)  # todo[exp]: try pick
+        #leaf = first(self.leaves)  # todo[exp]: try pick
+        leaf = self.find_deepest_leaf()
         parent = self.get_parent(leaf)
         descendants = self.get_descendants(parent)
         weights = [self.tree.nodes[parent].get("weight", 0)]
@@ -259,16 +282,15 @@ class TD(object):
             labels.append(descendant)
         return parent, weights, labels
 
-    def do_contractions(self, budget=4, debug=False):
+    def do_contractions(self, budget=4, debug=False, draw=False):
         """perform contractions given starting decomposition and budget"""
-        starting_root = self.root
         # decomp.draw("subtree")
         # plt.show()
         while True:
             local_root = self.extract_subtree(budget)
             if local_root is None:  # obstructed by high-degree parent
                 center, weights, labels = self.find_weighted_star()
-                print("invoked weighted star:", center, weights)
+                if debug: print("invoked weighted star:", center, weights)
                 local_nodes = self.get_descendants(center)
                 local_decomp = linear_search(weights, labels, self.forced_ancestries)
                 local_root = center
@@ -278,26 +300,33 @@ class TD(object):
                 ancestries = filter_ancestries(self.forced_ancestries, local_graph)
                 local_graph.graph["forced_ancestries"] = ancestries
                 local_decomp = sat_solver(local_graph)
-            self.draw("weight", highlight=[local_root])
-            local_decomp.draw("weight")
-            print(f"root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}")
+            if draw:
+                self.draw("weight", highlight=local_nodes)
+                local_decomp.draw("weight")
+            if debug:
+                print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
             # todo[analyze]: do you need local nodes or is it in decomp
-            self.contract(local_root, local_decomp, local_nodes)
+            self.contract(local_decomp, local_nodes)
             self.annotate_subtree()  # maybe more annotations needed
-            if local_root == starting_root:  # reached root of heuristic decomposition
+            if self.root in local_nodes:  # reached root of heuristic decomposition
                 break
-        print("treedepth after contraction:", self.tree.nodes[starting_root]["weight"]+1)
+        # print("treedepth after contraction:", self.tree.nodes[starting_root]["weight"]+1)
 
-    def inflate_all(self):
+    def inflate_all(self, draw=False):
         """inflate decomposition to obtain full decomposition"""
         for node, local_decomp in reversed(self.contractions):
-            if node == self.root:
+            if len(self.tree) == 1:
                 self.tree = local_decomp.tree
             else:
-                parent = self.get_parent(node)
+                parent = self.get_parent(node) if node != self.root else None
+                children = self.tree.successors(node)
                 self.tree.remove_node(node)
                 self.tree = nx.union(self.tree, local_decomp.tree)
-                self.tree.add_edge(parent, local_decomp.root)
+                if parent is not None:
+                    self.tree.add_edge(parent, local_decomp.root)
+                for child in children:
+                    self.tree.add_edge(node, child)
+            if draw: self.draw(highlight=local_decomp.tree.nodes)
 
 
 # upper bound heuristics
@@ -465,9 +494,9 @@ def linear_search(weights, labels, ancestries, debug=False):
     forced_children = set()
     for parent, child in ancestries:
         assert child != center_label, "center of weighted star cannot be ancestor"
-        if parent == center_label:
+        if parent == center_label and child in labels:
             forced_children.add(child)
-    forced_weight = -1
+    forced_weight = 0
     unforced_combined = []
     for weight, label in zip(weights[1:], labels[1:]):
         if label in forced_children:
@@ -502,42 +531,27 @@ def linear_search(weights, labels, ancestries, debug=False):
     return TD(mindecomp, root=decomp_root, depth=mintd)
 
 num_sat_calls = 0
-sat_solver_index = 0
-cache = [(nx.DiGraph([(5, 8), (5, 2)]), 5, 2),
-         (nx.DiGraph([(3, 6), (3, 0)]), 3, 2),
-         (nx.DiGraph([(1, 0), (1, 2)]), 1, 3),
-         (nx.DiGraph([(7, 4), (4, 1)]), 7, 5)]
-
-
+total_sat_calls = 0
 def sat_solver(graph: nx.Graph):
     """forced_ancestries must be specified as a graph attribute"""
-    # dummy placeholder, always reports path as the optimal decomposition
-    # decomp = nx.DiGraph()
-    # labels, weights = zip(*sorted(graph.nodes.data("weight", default=0),
-    #                               key=itemgetter(1), reverse=True))
-    # nx.add_path(decomp, labels)
-    # depth = max(i+w for i,w in enumerate(weights, start=1))
-    # return TD(decomp, root=labels[0], depth=depth)
-    # global sat_solver_index
-    # tree, root, depth = cache[sat_solver_index]
-    # sat_solver_index += 1
-    # return TD(tree, graph, root, depth)
     global num_sat_calls
     num_sat_calls += 1
-    lb, ub, decomp = satencoding.main(get_args(graph))
-    print("satencoding done", lb, ub)
-    print("this is decomp", decomp.edges)
-    droot = find_root(decomp)
-    depth = find_depth(decomp, droot)
-    return TD(decomp, graph, root=droot, depth=depth)
+    ingraphsize = len(graph)
+    lb, ub, decomptree = satencoding.main(get_args(graph))
+    decompsize = len(decomptree)
+    assert decompsize == ingraphsize, f"decomp mismatch {ingraphsize} {decompsize}"
+    droot = find_root(decomptree)
+    depth = find_depth(decomptree, droot)
+    return TD(decomptree, graph, root=droot, depth=depth)
 
 
-def local_improvement(graph: nx.Graph, budget=4, heuristic_func=two_step_dfs, debug=False):
-    graph = nx.convert_node_labels_to_integers(graph)
-    decomp = heuristic_func(graph)
+def local_improvement(given_decomp: TD, budget, debug=False, draw=False):
+    """given_decomp contains a starting decomposition along with the graph"""
+    decomp = given_decomp.copy()
+    decomp.reset()
     decomp.annotate()
-    decomp.do_contractions(budget=budget, debug=debug)
-    decomp.inflate_all()
+    decomp.do_contractions(budget=budget, debug=debug, draw=draw)
+    decomp.inflate_all(draw=draw)
     decomp.depth = find_depth(decomp.tree, decomp.root)
     return decomp
 
@@ -553,21 +567,84 @@ def draw_graph(g):
     plt.show()
 
 
-# wrong cases
-# seed=3, simple_dfs, dim=3, budget=3: edge not covered
-# seed=3, two_step_dfs, dim=4, budget=3: edge not covered
-# seed=3, two_step_dfs, dim=4, budget=4: invalid decompostition
+def relabelled(g):
+    return nx.convert_node_labels_to_integers(g)
 
+
+# all cases
+# seed=3, two_step_dfs, dim=3, budget=3: 6->5[5]
+# seed=3, two_step_dfs, dim=5, budget=3: 25->16[9]
+# wrong cases
+# *seed=3, simple_dfs, dim=3, budget=3: edge not covered; NOW WORKING, 9->6[5]
+# *seed=3, two_step_dfs, dim=4, budget=3: edge not covered; NOW WORKING, 12->9[7]
+# *seed=3, two_step_dfs, dim=4, budget=4: invalid decompostition; NOW WORKING, 12->9[7]
+# *seed=3, two_step_dfs, dim=6, budget=5: edge not covered; NOW WORKING, 33-24[11]
+# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#005: edge not covered; NOW WORKING
+# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#079: invalid literal UNSAT; NOW WORKING
+# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#081: KeyError, node not in DiGraph; NOW WORKING
+# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#135: invalid literal UNSAT; edge not covered
+# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#179: KeyError
+# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#197: KeyError
+# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#199: edge not covered
 if __name__ == '__main__':
-    grid_dim = 3
-    _g = nx.grid_2d_graph(grid_dim, grid_dim)
+    if len(sys.argv) > 1:
+        instance_num = int(sys.argv[1])
+    else:
+        instance_num = 135
+    filename = f"../pace-public/exact_{instance_num:03}.gr"
+    print("filename:", filename)
+    start_time = time()
+    # grid_dim = 6
+    # _g = nx.grid_2d_graph(grid_dim, grid_dim)
+    # _g = nx.convert_node_labels_to_integers(_g)
+    # _g = nx.Graph(satencoding.read_edge("../../treedepth-sat/inputs/famous/B10Cage.edge"))
+    input_graph = relabelled(nx.Graph(satencoding.read_edge(filename)))
+    random.seed(RANDOM_SEED)
+    satencoding.VIRTUALIZE = True
+    current_best = randomized_multiprobe_dfs(input_graph)
+    heuristic_depth = current_best.depth
+    input_size = len(input_graph)
+    if LOGGING:
+        wandb.init(project="tdli")
+        wandb.config.seed = RANDOM_SEED
+    for current_budget in range(5, 31, 5):
+        print("\ntrying budget", current_budget)
+        total_sat_calls += num_sat_calls
+        num_sat_calls = 0
+        new_decomp = local_improvement(current_best, current_budget, draw=False)
+        satencoding.verify_decomp(input_graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
+        if new_decomp.depth < current_best.depth:
+            print(f"\nfound improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
+            current_best = new_decomp
+        else:
+            print(f"\nno improvement with budget: {current_budget}")
+        print(f"#sat calls: {num_sat_calls}")
+        if current_budget >= input_size: break
+    print("filename:", filename)
+    logdata = {"filename": filename, "best_depth": current_best.depth, "n": len(input_graph),
+               "m": input_graph.number_of_edges(), "total_sat_calls": total_sat_calls,
+               "time": time() - start_time, "final_budget": current_budget,
+               "start_depth": heuristic_depth}
+    print("done, best depth: {best_depth}, n: {n}, m: {m}, final budget: {final_budget}".format(**logdata))
+    print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
+    if LOGGING: wandb.log(logdata)
+
+    # if len(input_graph) <= 50:
+    #     print("\nattempting sat solver on input_graph")
+    #     decomp = sat_solver(input_graph)
+    #     print(f"sat solution depth: {decomp.depth}")
+
     # print("treedepth:", brute_td(_g))
     # print("clique size:", contraction2clique(_g))
-    random.seed(3)
-    satencoding.VIRTUALIZE = True
-    _decomp2 = local_improvement(_g, 3, heuristic_func=simple_dfs)
-    _decomp2.draw("depth")
-    print(f"final depth: {_decomp2.depth}\t #sat calls: {num_sat_calls}")
+    # _decomp2 = local_improvement(_g, 20, two_step_dfs(_g), draw=False)
+    # _decomp2.draw()
+    # print(f"new depth: {_decomp2.depth}\t #sat calls: {num_sat_calls}")
+    # satencoding.verify_decomp(_g, _decomp2.tree, _decomp2.depth+1, _decomp2.root)
+    # _decomp3 = TD(_decomp2.tree, _g, _decomp2.root, _decomp2.depth)
+    # _decomp2.reset()
+    # _decomp4 = local_improvement(_g, 3, _decomp3, draw=False)
+    # print(f"new depth: {_decomp4.depth}\t #sat calls: {num_sat_calls}")
+    # satencoding.verify_decomp(_g, _decomp4.tree, _decomp4.depth+1, _decomp4.root)
     # _g2 = nx.cycle_graph(3)
     # _g2.graph["forced_ancestries"] = [(2,0), (1,0)]
     # _g2.nodes[0]["weight"] = 1

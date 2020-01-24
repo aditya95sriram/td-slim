@@ -48,6 +48,7 @@ def degree_one_reduction(g):
 def read_edge(filename):
     with open(filename, 'r') as in_file:
         edge = in_file.read()
+    edge = edge.rstrip("\n")
     edge = edge.replace('e ', '')
     edge = edge.split('\n')
     while edge[0][0] != 'p':
@@ -126,11 +127,6 @@ def generate_encoding(g, reqwidth):
     for e in g.edges():
         u = min(e)
         v = max(e)
-        if u == 3 and v == 4:
-            for i in range(1, width):
-                encoding += 'c new\n'
-                encoding += '-%i -%i %i 0\n' % (s[u][v][i], s[v][v][i - 1], s[u][v][i - 1])
-                nclauses += 1
         for i in range(1, width):
             encoding += '-%i %i -%i %i 0\n' % (s[u][u][i], s[u][u][i - 1], s[v][v][i], s[u][v][i])
             nclauses += 1
@@ -178,7 +174,7 @@ def generate_encoding(g, reqwidth):
     return preamble + encoding + weight_encoding + ancestry_encoding
 
 
-def decode_output(sol, g, reqwidth, return_decomp=False):
+def decode_output(sol, g, reqwidth, return_decomp=False, debug=False):
     nv = g.number_of_nodes()
     if VIRTUALIZE and reqwidth > nv:
         width = nv+1
@@ -209,8 +205,8 @@ def decode_output(sol, g, reqwidth, return_decomp=False):
                 level.append(ver)
         components.append(level)
     for i in components:
-        sys.stderr.write(str(i) + '\n')
-    sys.stderr.write('\n' + "*" * 10 + '\n')
+        if debug: sys.stderr.write(str(i) + '\n')
+    if debug: sys.stderr.write('\n' + "*" * 10 + '\n')
     decomp = nx.DiGraph()
     root = list()
     level_i = list()
@@ -245,13 +241,15 @@ def decode_output(sol, g, reqwidth, return_decomp=False):
         level_i.append(level)
         # print level
     # show_graph(decomp,1)
-    verify_decomp(g=g, s=decomp, width=width, root=root)
+    # verify_decomp(g=g, s=decomp, width=width, root=root)
     if return_decomp: return decomp
 
 
-def verify_decomp(g, s, width, root):
-    sys.stderr.write("\nValidating tree depth decomposition\n")
-    sys.stderr.flush()
+def verify_decomp(g, s, width, roots):
+    # sys.stderr.write("\nValidating tree depth decomposition\n")
+    # sys.stderr.flush()
+    if not isinstance(roots, (list, tuple, set)):
+        roots = [roots]
     # print g.edges()
     for e in g.edges():
         try:
@@ -261,17 +259,17 @@ def verify_decomp(g, s, width, root):
                 nx.shortest_path(s, e[1], e[0])
             except:
                 raise Exception("Edge %i %i not covered\n" % (e[0], e[1]))
-    for v, d in g.degree():
+    for v, d in s.degree():
         count = 0
         if d != 1:
             continue
-        for i in root:
+        for i in roots:
             try:
                 if len(nx.shortest_path(s, i, v)) - 1 > width:
                     raise ValueError("depth of tree more than width\n")
             except:
                 count += 1
-                if count == len(root):
+                if count == len(roots):
                     raise Exception("No root found for %i\n" % v)
                 continue
     sys.stderr.write("Valid treedepth decomp\n")
@@ -337,7 +335,7 @@ class Timer(object):
             print(self.err, file=sys.stderr)
 
 
-def solve_component(g, cli_args):
+def solve_component(g, cli_args, debug=False):
     lb = 0
     ub = 0
     to = False
@@ -350,8 +348,8 @@ def solve_component(g, cli_args):
     instance = cli_args.instance
     # looprange = range(g.number_of_nodes() + 2, 1, -1)  # original
     maxweight = max(map(itemgetter(1), g.nodes.data("weight", default=0)))
-    looprange = range(g.number_of_nodes() + maxweight + 1, maxweight + 1, -1)
-    print("looprange", looprange, g.number_of_nodes())
+    looprange = range(g.number_of_nodes() + maxweight + 1, maxweight, -1)
+    if debug: print("looprange", looprange, g.number_of_nodes())
     for i in looprange:
         with Timer(time_list=encoding_times):
             encoding = generate_encoding(g, i)
@@ -372,13 +370,12 @@ def solve_component(g, cli_args):
             to = True
             if lb == ub == 0:  # first timeout, record ub
                 ub = i
+        if rc == 10:
+            ub = i - 1
         if rc == 20:
-            if to:
-                # lb = i - 2
-                lb = i
-            if lb == ub == 0:  # never timed out
-                lb = ub = i
+            lb = i
             return i, lb, ub, to, encoding_times, solving_times
+    raise ValueError("should not reach here")
 
 
 def signal_handler(signum, frame):
@@ -387,7 +384,7 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
-def main(args):
+def main(args, debug=False):
     cpu_time = time.time()
     instance = args.instance
     if instance is not None:
@@ -415,8 +412,8 @@ def main(args):
             print("preprocessing...", file=sys.stderr)
             g = degree_one_reduction(g=g)
             g, buff = apex_vertices(g=g)
-    print("* buffer verts:", buff)
-    print('treedepthp2sat', instance, n, m, g.number_of_nodes(), buff)
+    # print("* buffer verts:", buff)
+    if debug: print('treedepthp2sat', instance, n, m, g.number_of_nodes(), buff)
     if args.width != -1:
         return
     ncomps = nx.number_connected_components(g)
@@ -426,43 +423,43 @@ def main(args):
         global_lb = global_ub = 0
     for comp_nodes in nx.connected_components(g):
         subgraph = g.subgraph(comp_nodes)
-        print("\ncomponent", icomp, "of", ncomps, file=sys.stderr)
+        if debug: print("\ncomponent", icomp, "of", ncomps, file=sys.stderr)
         component = nx.convert_node_labels_to_integers(subgraph, first_label=0,
                                                        label_attribute="original_label")
         label_mapping = dict(component.nodes.data("original_label"))
         inverse_mapping = {v: u for u, v in label_mapping.items()}
         found_ancestries = component.graph.get("forced_ancestries", [])
-        print("found ancestries:", found_ancestries)
+        if debug: print("found ancestries:", found_ancestries)
         remapped_ancestries = []
         for v,u in found_ancestries:
             remapped_ancestries.append((inverse_mapping[v], inverse_mapping[u]))
-        print("remapped ancestries:", remapped_ancestries)
+        if debug: print("remapped ancestries:", remapped_ancestries)
         component.graph["forced_ancestries"] = remapped_ancestries
-        print("weights:", component.nodes.data("weight", default=0))
+        if debug: print("weights:", component.nodes.data("weight", default=0))
         i, lb, ub, to, encoding_time, solving_time = solve_component(component, args)
         sol_file = os.path.join(args.temp, instance + '_' + str(ub + 1) + ".sol")
-        decomp = decode_output(sol=sol_file, g=component, reqwidth=ub + 1,
+        decomptree = decode_output(sol=sol_file, g=component, reqwidth=ub + 1,
                                return_decomp=True)
         # reapply weights
         for u, weight in component.nodes.data("weight"):
-            if weight is not None: decomp.nodes[u]["weight"] = weight
-        decomp = nx.relabel_nodes(decomp, label_mapping)
-        print(i - 2, lb, ub, to, time.time() - cpu_time, prep_timer.duration,
+            if weight is not None: decomptree.nodes[u]["weight"] = weight
+        decomptree = nx.relabel_nodes(decomptree, label_mapping)
+        if debug: print(i - 2, lb, ub, to, time.time() - cpu_time, prep_timer.duration,
               sum(encoding_time), sum(solving_time), end="")
         for j in solving_time:
-            print(j, end="")
-        print()
-        print("* component treedepth range: [{}-{}]".format(lb, ub), file=sys.stderr)
+            if debug: print(j, end="")
+        if debug: print()
+        if debug: print("* component treedepth range: [{}-{}]".format(lb, ub), file=sys.stderr)
         global_lb = min(global_lb, lb)
         global_ub = max(global_ub, ub)
         icomp += 1
-    print("\n* final treedepth:", end="")
+    print("* final treedepth:", end="")
     if global_ub == global_lb:
         print(buff + global_ub, end="")
     else:
         print("[{}-{}]".format(buff + global_lb, buff + global_ub), end="")
-    print("\ttotal-time: {:.2f}s".format(time.time() - cpu_time), end="")
-    return buff + global_lb, buff + global_ub, decomp
+    print("\ttotal-time: {:.2f}s".format(time.time() - cpu_time))
+    return buff + global_lb, buff + global_ub, decomptree
 
 
 # argument parser
