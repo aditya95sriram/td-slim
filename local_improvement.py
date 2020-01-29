@@ -630,7 +630,6 @@ if __name__ == '__main__':
         wandb.config.start_depth = heuristic_depth
     for current_budget in range(5, 31, 5):
         print("\ntrying budget", current_budget)
-        total_sat_calls += num_sat_calls
         num_sat_calls = 0
         new_decomp = local_improvement(current_best, current_budget, draw=False)
         satencoding.verify_decomp(input_graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
@@ -640,6 +639,7 @@ if __name__ == '__main__':
         else:
             print(f"\nno improvement with budget: {current_budget}")
         print(f"#sat calls: {num_sat_calls}")
+        total_sat_calls += num_sat_calls
         if current_budget >= input_size: break
     print("filename:", filename)
     logdata = {"best_depth": current_best.depth,
