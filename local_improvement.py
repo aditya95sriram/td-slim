@@ -1,6 +1,6 @@
 import networkx as nx
 import random
-import sys
+import sys, os
 from operator import itemgetter
 import satencoding
 
@@ -14,7 +14,14 @@ LOGGING = False
 SAVEFIG = False
 FIGCOUNTER = 0
 
-if LOGGING: import wandb
+# optionally import wandb for logging purposes
+try:
+    import wandb
+except ImportError:
+    wandb = None
+    pass
+
+
 # utility functions
 
 def first(obj):
@@ -237,13 +244,14 @@ class TD(object):
                         break
         return None
 
-    def contract(self, local_decomp: 'TD', descendants):
+    def contract(self, local_decomp: 'TD'):
         """
         contract subtree rooted at root into single vertex with weight
         desc is the set of descendants of root
         """
         # add root->subtree into self.contractions
         root = local_decomp.root
+        descendants = local_decomp.tree.nodes
         assert root is not None, "root of local decomp is none"
         # check if current root is in local instance
         if self.root in descendants:
@@ -292,21 +300,26 @@ class TD(object):
                 center, weights, labels = self.find_weighted_star()
                 if debug: print("invoked weighted star:", center, weights)
                 local_nodes = self.get_descendants(center)
-                local_decomp = linear_search(weights, labels, self.forced_ancestries)
+                local_decomps = [linear_search(weights, labels, self.forced_ancestries)]
                 local_root = center
             else:
                 local_nodes = self.get_descendants(local_root)
                 local_graph = self.graph.subgraph(local_nodes)
                 ancestries = filter_ancestries(self.forced_ancestries, local_graph)
+                # further filtering will be handled component-wise by sat solver
                 local_graph.graph["forced_ancestries"] = ancestries
-                local_decomp = sat_solver(local_graph)
+                local_decomps = sat_solver(local_graph)
             if draw:
                 self.draw("weight", highlight=local_nodes)
-                local_decomp.draw("weight")
+                for local_decomp in local_decomps:
+                    local_decomp.draw("weight")
             if debug:
-                print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
-            # todo[analyze]: do you need local nodes or is it in decomp
-            self.contract(local_decomp, local_nodes)
+                if len(local_decomps) > 1:
+                    print("more than 1 decomp returned, disconnected components")
+                for local_decomp in local_decomps:
+                    print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
+            for local_decomp in local_decomps:
+                self.contract(local_decomp)
             self.annotate_subtree()  # maybe more annotations needed
             if self.root in local_nodes:  # reached root of heuristic decomposition
                 break
@@ -537,12 +550,17 @@ def sat_solver(graph: nx.Graph):
     global num_sat_calls
     num_sat_calls += 1
     ingraphsize = len(graph)
-    lb, ub, decomptree = satencoding.main(get_args(graph))
-    decompsize = len(decomptree)
-    assert decompsize == ingraphsize, f"decomp mismatch {ingraphsize} {decompsize}"
-    droot = find_root(decomptree)
-    depth = find_depth(decomptree, droot)
-    return TD(decomptree, graph, root=droot, depth=depth)
+    lb, ub, decomptrees = satencoding.main(get_args(graph))
+    decompsize = sum(map(len, decomptrees))
+    if decompsize != ingraphsize:
+        draw_graph(graph)
+        raise ValueError(f"decomp mismatch {ingraphsize} {decompsize}")
+    decomps = []
+    for decomptree in decomptrees:
+        droot = find_root(decomptree)
+        depth = find_depth(decomptree, droot)
+        decomps.append(TD(decomptree, graph, root=droot, depth=depth))
+    return decomps
 
 
 def local_improvement(given_decomp: TD, budget, debug=False, draw=False):
@@ -557,7 +575,8 @@ def local_improvement(given_decomp: TD, budget, debug=False, draw=False):
 
 
 def get_args(graph: nx.Graph):
-    args = satencoding.parser.parse_args(["--timeout", "2", "--no-preprocess"])
+    args = parser.parse_args(sys.argv[1:] + ["--no-preprocess"])
+    args.instance = None
     args.graph = graph
     return args
 
@@ -571,27 +590,18 @@ def relabelled(g):
     return nx.convert_node_labels_to_integers(g)
 
 
-# all cases
-# seed=3, two_step_dfs, dim=3, budget=3: 6->5[5]
-# seed=3, two_step_dfs, dim=5, budget=3: 25->16[9]
-# wrong cases
-# *seed=3, simple_dfs, dim=3, budget=3: edge not covered; NOW WORKING, 9->6[5]
-# *seed=3, two_step_dfs, dim=4, budget=3: edge not covered; NOW WORKING, 12->9[7]
-# *seed=3, two_step_dfs, dim=4, budget=4: invalid decompostition; NOW WORKING, 12->9[7]
-# *seed=3, two_step_dfs, dim=6, budget=5: edge not covered; NOW WORKING, 33-24[11]
-# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#005: edge not covered; NOW WORKING
-# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#079: invalid literal UNSAT; NOW WORKING
-# *seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#081: KeyError, node not in DiGraph; NOW WORKING
-# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#135: invalid literal UNSAT; edge not covered
-# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#179: KeyError
-# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#197: KeyError
-# seed=3, randomize_multiprobe, budget=[5:31:5], pace-public#199: edge not covered
+parser = satencoding.parser
+parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
+
+
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        instance_num = int(sys.argv[1])
+    args = parser.parse_args()
+    print("got args", args)
+    LOGGING = args.logging
+    if args.instance is not None:
+        filename = args.instance
     else:
-        instance_num = 135
-    filename = f"../pace-public/exact_{instance_num:03}.gr"
+        filename = "../pace-public/exact_005.gr"
     print("filename:", filename)
     start_time = time()
     # grid_dim = 6
@@ -605,8 +615,15 @@ if __name__ == '__main__':
     heuristic_depth = current_best.depth
     input_size = len(input_graph)
     if LOGGING:
-        wandb.init(project="tdli")
+        basename = os.path.basename(filename)
+        instance_type, instance_num = os.path.splitext(basename)[0].split("_")
+        wandb.init(project="tdli3", tags=["workstation", instance_type])
+        wandb.config.instance_num = int(instance_num)
+        wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
+        wandb.config.n = len(input_graph)
+        wandb.config.m = input_graph.number_of_edges()
+        wandb.config.start_depth = heuristic_depth
     for current_budget in range(5, 31, 5):
         print("\ntrying budget", current_budget)
         total_sat_calls += num_sat_calls
@@ -621,49 +638,12 @@ if __name__ == '__main__':
         print(f"#sat calls: {num_sat_calls}")
         if current_budget >= input_size: break
     print("filename:", filename)
-    logdata = {"filename": filename, "best_depth": current_best.depth, "n": len(input_graph),
-               "m": input_graph.number_of_edges(), "total_sat_calls": total_sat_calls,
-               "time": time() - start_time, "final_budget": current_budget,
-               "start_depth": heuristic_depth}
-    print("done, best depth: {best_depth}, n: {n}, m: {m}, final budget: {final_budget}".format(**logdata))
+    logdata = {"best_depth": current_best.depth,
+               "total_sat_calls": total_sat_calls, "time": time() - start_time,
+               "final_budget": current_budget}
+    print("done, depth: {best_depth}/{start_depth}, n: {n}, m: {m}, final budget: {final_budget}".format(n=len(input_graph),
+                                                                                                m=input_graph.number_of_edges(),
+                                                                                                start_depth=heuristic_depth,
+                                                                                                **logdata))
     print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
     if LOGGING: wandb.log(logdata)
-
-    # if len(input_graph) <= 50:
-    #     print("\nattempting sat solver on input_graph")
-    #     decomp = sat_solver(input_graph)
-    #     print(f"sat solution depth: {decomp.depth}")
-
-    # print("treedepth:", brute_td(_g))
-    # print("clique size:", contraction2clique(_g))
-    # _decomp2 = local_improvement(_g, 20, two_step_dfs(_g), draw=False)
-    # _decomp2.draw()
-    # print(f"new depth: {_decomp2.depth}\t #sat calls: {num_sat_calls}")
-    # satencoding.verify_decomp(_g, _decomp2.tree, _decomp2.depth+1, _decomp2.root)
-    # _decomp3 = TD(_decomp2.tree, _g, _decomp2.root, _decomp2.depth)
-    # _decomp2.reset()
-    # _decomp4 = local_improvement(_g, 3, _decomp3, draw=False)
-    # print(f"new depth: {_decomp4.depth}\t #sat calls: {num_sat_calls}")
-    # satencoding.verify_decomp(_g, _decomp4.tree, _decomp4.depth+1, _decomp4.root)
-    # _g2 = nx.cycle_graph(3)
-    # _g2.graph["forced_ancestries"] = [(2,0), (1,0)]
-    # _g2.nodes[0]["weight"] = 1
-    #
-    # # sat encoding and solving
-    # import os, subprocess
-    # i, temp, instance = 5, "./tmp", "trial"
-    # encoding = satencoding.generate_encoding(_g2, i)
-    # print(encoding)
-    # cnf = os.path.join(temp, instance + '_' + str(i) + ".cnf")
-    # with open(cnf, 'w') as ofile:
-    #     ofile.write(encoding)
-    # sol = os.path.join(temp, instance + '_' + str(i) + ".sol")
-    # cmd = ["glucose", cnf, sol]
-    # # print cmd
-    # p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    # output, err = p.communicate()
-    # rc = p.returncode
-    # print("retcode", rc)
-    # if rc == 10:
-    #     sol_file = os.path.join(temp, instance + '_' + str(i) + ".sol")
-    #     decomp = satencoding.decode_output(sol_file, _g2, i)

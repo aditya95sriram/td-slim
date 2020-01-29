@@ -421,9 +421,21 @@ def main(args, debug=False):
     global_lb, global_ub = 1e9, -1
     if ncomps == 0:  # only empty graph remains after preprocessing, for loop won't be triggered
         global_lb = global_ub = 0
+    decomptrees = []
     for comp_nodes in nx.connected_components(g):
         subgraph = g.subgraph(comp_nodes)
         if debug: print("\ncomponent", icomp, "of", ncomps, file=sys.stderr)
+        if len(subgraph) == 1:
+            singlenode = next(iter(subgraph.nodes))
+            nodeweight = subgraph.nodes[singlenode].get("weight", 0)
+            if debug: print("single node component")
+            global_lb = min(global_lb, nodeweight+1)
+            global_ub = max(global_ub, nodeweight+1)
+            icomp += 1
+            decomptree = nx.DiGraph()
+            decomptree.add_node(singlenode, weight=nodeweight)
+            decomptrees.append(decomptree)
+            continue  # proceed to next component
         component = nx.convert_node_labels_to_integers(subgraph, first_label=0,
                                                        label_attribute="original_label")
         label_mapping = dict(component.nodes.data("original_label"))
@@ -432,7 +444,8 @@ def main(args, debug=False):
         if debug: print("found ancestries:", found_ancestries)
         remapped_ancestries = []
         for v,u in found_ancestries:
-            remapped_ancestries.append((inverse_mapping[v], inverse_mapping[u]))
+            if v in subgraph and u in subgraph:
+                remapped_ancestries.append((inverse_mapping[v], inverse_mapping[u]))
         if debug: print("remapped ancestries:", remapped_ancestries)
         component.graph["forced_ancestries"] = remapped_ancestries
         if debug: print("weights:", component.nodes.data("weight", default=0))
@@ -453,13 +466,14 @@ def main(args, debug=False):
         global_lb = min(global_lb, lb)
         global_ub = max(global_ub, ub)
         icomp += 1
-    print("* final treedepth:", end="")
+        decomptrees.append(decomptree)
+    print("* final treedepth:", end="", file=sys.stderr)
     if global_ub == global_lb:
-        print(buff + global_ub, end="")
+        print(buff + global_ub, end="", file=sys.stderr)
     else:
-        print("[{}-{}]".format(buff + global_lb, buff + global_ub), end="")
-    print("\ttotal-time: {:.2f}s".format(time.time() - cpu_time))
-    return buff + global_lb, buff + global_ub, decomptree
+        print("[{}-{}]".format(buff + global_lb, buff + global_ub), end="", file=sys.stderr)
+    print("\ttotal-time: {:.2f}s".format(time.time() - cpu_time), file=sys.stderr)
+    return buff + global_lb, buff + global_ub, decomptrees
 
 
 # argument parser
