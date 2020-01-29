@@ -305,10 +305,11 @@ class TD(object):
             else:
                 local_nodes = self.get_descendants(local_root)
                 local_graph = self.graph.subgraph(local_nodes)
+                known_depth = find_depth(self.tree, local_root)
                 ancestries = filter_ancestries(self.forced_ancestries, local_graph)
                 # further filtering will be handled component-wise by sat solver
                 local_graph.graph["forced_ancestries"] = ancestries
-                local_decomps = sat_solver(local_graph)
+                local_decomps = sat_solver(local_graph, known_depth)
             if draw:
                 self.draw("weight", highlight=local_nodes)
                 for local_decomp in local_decomps:
@@ -545,12 +546,12 @@ def linear_search(weights, labels, ancestries, debug=False):
 
 num_sat_calls = 0
 total_sat_calls = 0
-def sat_solver(graph: nx.Graph):
+def sat_solver(graph: nx.Graph, known_depth=-1):
     """forced_ancestries must be specified as a graph attribute"""
     global num_sat_calls
     num_sat_calls += 1
     ingraphsize = len(graph)
-    lb, ub, decomptrees = satencoding.main(get_args(graph))
+    lb, ub, decomptrees = satencoding.main(get_args(graph, known_depth))
     decompsize = sum(map(len, decomptrees))
     if decompsize != ingraphsize:
         draw_graph(graph)
@@ -574,10 +575,13 @@ def local_improvement(given_decomp: TD, budget, debug=False, draw=False):
     return decomp
 
 
-def get_args(graph: nx.Graph):
-    args = parser.parse_args(sys.argv[1:] + ["--no-preprocess"])
+def get_args(graph: nx.Graph, known_depth=-1):
+    args = parser.parse_args(sys.argv[1:])
+    args.preprocess = False  # turn off preprocessing
     args.instance = None
     args.graph = graph
+    if known_depth >= 0:
+        args.depth = known_depth
     return args
 
 

@@ -348,8 +348,14 @@ def solve_component(g, cli_args, debug=False):
     instance = cli_args.instance
     # looprange = range(g.number_of_nodes() + 2, 1, -1)  # original
     maxweight = max(map(itemgetter(1), g.nodes.data("weight", default=0)))
-    looprange = range(g.number_of_nodes() + maxweight + 1, maxweight, -1)
-    if debug: print("looprange", looprange, g.number_of_nodes())
+    if cli_args.depth >= 0:
+        loopstart = cli_args.depth + 1
+        if debug and loopstart < n + maxweight + 1:
+            print(f"saved {n+maxweight+1 - loopstart} on loopstart")
+    else:
+        loopstart = n + maxweight + 1
+    looprange = range(loopstart, maxweight, -1)
+    if debug: print("looprange", looprange, n)
     for i in looprange:
         with Timer(time_list=encoding_times):
             encoding = generate_encoding(g, i)
@@ -482,7 +488,7 @@ parser.add_argument('-f', '--file', dest='instance', action='store', type=lambda
                     default=None, help='instance')
 parser.add_argument('-o', '--timeout', dest='timeout', action='store', type=int, default=900,
                     help='timeout for each SAT call')
-parser.add_argument('-d', '--depth', dest='d', action='store', type=int, default=-1, help='depth')
+parser.add_argument('-d', '--depth', dest='depth', action='store', type=int, default=-1, help='depth')
 parser.add_argument('-w', '--width', dest='width', action='store', type=int, default=-1, help='width')
 parser.add_argument('-t', '--temp', dest='temp', action='store', type=str, default='./tmp',
                     help='temporary folder')
