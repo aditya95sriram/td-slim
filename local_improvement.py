@@ -3,6 +3,7 @@ import random
 import sys, os
 from operator import itemgetter
 import satencoding
+from itertools import repeat
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
@@ -13,7 +14,6 @@ RANDOM_SEED = 3
 LOGGING = False
 SAVEFIG = False
 FIGCOUNTER = 0
-PICK_DEEPEST = False
 
 # optionally import wandb for logging purposes
 try:
@@ -226,21 +226,11 @@ class TD(object):
                 queue.append(child)
         return desc
 
-    def get_depth(self, node):
-        """returns the virtual depth of a node (real depth + weight)"""
-        data = self.tree.nodes[node]
-        return data["depth"] + data.get("weight", 0)
-
     def extract_subtree(self, budget):
         """extract a subtree that fits the budget (prereq: annotate)"""
         data = self.tree.nodes
         feasible_root = None
-        if PICK_DEEPEST:
-            sorted_leaves = sorted(self.leaves, key=self.get_depth, reverse=True)
-        else:
-            sorted_leaves = self.leaves
-        for leaf in sorted_leaves:
-            # print(f"leaf: {leaf}, depth: {self.get_depth(leaf)}")
+        for leaf in self.leaves:
             node = leaf
             while True:
                 if node == self.root:
@@ -608,14 +598,11 @@ def relabelled(g):
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
-parser.add_argument('-p', '--pick-deepest', action='store_true',
-                    help="If true, always pick subinstance containing deepest leaf, else pick arbitrarily")
 
 if __name__ == '__main__':
     args = parser.parse_args()
     print("got args", args)
     LOGGING = args.logging
-    PICK_DEEPEST = args.pick_deepest
     if args.instance is not None:
         filename = args.instance
     else:
@@ -635,7 +622,7 @@ if __name__ == '__main__':
     if LOGGING:
         basename = os.path.basename(filename)
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
-        wandb.init(project="tdli-dl", tags=["workstation", instance_type])
+        wandb.init(project="tdli-bvtom", tags=["workstation", instance_type])
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
@@ -643,13 +630,14 @@ if __name__ == '__main__':
         wandb.config.m = input_graph.number_of_edges()
         wandb.config.start_depth = heuristic_depth
         wandb.config.timeout = args.timeout
-    if args.budget is None:
+    single_budget = args.budget is not None
+    if not single_budget:
         budget_range = range(5,31,5)
         if LOGGING:
             wandb.config.budget = -1
             wandb.log({"best_depth": heuristic_depth})
     else:
-        budget_range = [args.budget]
+        budget_range = repeat(args.budget)
         if LOGGING: wandb.config.budget = args.budget
     for current_budget in budget_range:
         print("\ntrying budget", current_budget)
@@ -659,10 +647,11 @@ if __name__ == '__main__':
         if new_decomp.depth < current_best.depth:
             print(f"\nfound improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
             current_best = new_decomp
-            if LOGGING and args.budget is None:
+            if LOGGING and not single_budget:
                 wandb.log({"best_depth": current_best.depth})
         else:
             print(f"\nno improvement with budget: {current_budget}")
+            if single_budget: break
         print(f"#sat calls: {num_sat_calls}")
         total_sat_calls += num_sat_calls
         if current_budget >= input_size: break
