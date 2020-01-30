@@ -374,8 +374,9 @@ def solve_component(g, cli_args, debug=False):
         sys.stderr.write("%i %i\n" % (i - 1, rc))
         if rc == 0:
             to = True
-            if lb == ub == 0:  # first timeout, record ub
-                ub = i
+            if cli_args.early_exit:
+                lb = looprange.stop
+                return i, lb, ub, to, encoding_times, solving_times
         if rc == 10:
             ub = i - 1
         if rc == 20:
@@ -495,6 +496,7 @@ parser.add_argument('-t', '--temp', dest='temp', action='store', type=str, defau
 parser.add_argument('-s', '--solver', dest='solver', action='store', type=str, default='glucose',
                     help='SAT solver')  # or 'minicard_encodings_static'
 parser.add_argument('-n', '--no-preprocess', dest="preprocess", action='store_false', help="Turn off preprocessing")
+parser.add_argument('-e', '--early-exit', action='store_true', help="stop at first TIMEOUT, rather than first UNSAT")
 
 if __name__ == "__main__":
     signal.signal(signal.SIGHUP, signal_handler)
