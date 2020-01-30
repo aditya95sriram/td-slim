@@ -596,7 +596,7 @@ def relabelled(g):
 
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
-
+parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -621,14 +621,23 @@ if __name__ == '__main__':
     if LOGGING:
         basename = os.path.basename(filename)
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
-        wandb.init(project="tdli3", tags=["workstation", instance_type])
+        wandb.init(project="tdli-bvto", tags=["cluster", instance_type])
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
         wandb.config.n = len(input_graph)
         wandb.config.m = input_graph.number_of_edges()
         wandb.config.start_depth = heuristic_depth
-    for current_budget in range(5, 31, 5):
+        wandb.config.timeout = args.timeout
+    if args.budget is None:
+        budget_range = range(5,31,5)
+        if LOGGING:
+            wandb.config.budget = -1
+            wandb.log({"best_depth": heuristic_depth})
+    else:
+        budget_range = [args.budget]
+        if LOGGING: wandb.config.budget = args.budget
+    for current_budget in budget_range:
         print("\ntrying budget", current_budget)
         num_sat_calls = 0
         new_decomp = local_improvement(current_best, current_budget, draw=False)
@@ -636,6 +645,8 @@ if __name__ == '__main__':
         if new_decomp.depth < current_best.depth:
             print(f"\nfound improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
             current_best = new_decomp
+            if LOGGING and args.budget is None:
+                wandb.log({"best_depth": current_best.depth})
         else:
             print(f"\nno improvement with budget: {current_budget}")
         print(f"#sat calls: {num_sat_calls}")
