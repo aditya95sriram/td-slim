@@ -3,6 +3,7 @@ import random
 import sys, os
 from operator import itemgetter
 import satencoding
+from itertools import repeat
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
@@ -621,7 +622,7 @@ if __name__ == '__main__':
     if LOGGING:
         basename = os.path.basename(filename)
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
-        wandb.init(project="tdli-bvto", tags=["cluster", instance_type])
+        wandb.init(project="tdli-bvtom", tags=["workstation", instance_type])
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
@@ -629,13 +630,14 @@ if __name__ == '__main__':
         wandb.config.m = input_graph.number_of_edges()
         wandb.config.start_depth = heuristic_depth
         wandb.config.timeout = args.timeout
-    if args.budget is None:
+    single_budget = args.budget is not None
+    if not single_budget:
         budget_range = range(5,31,5)
         if LOGGING:
             wandb.config.budget = -1
             wandb.log({"best_depth": heuristic_depth})
     else:
-        budget_range = [args.budget]
+        budget_range = repeat(args.budget)
         if LOGGING: wandb.config.budget = args.budget
     for current_budget in budget_range:
         print("\ntrying budget", current_budget)
@@ -645,10 +647,11 @@ if __name__ == '__main__':
         if new_decomp.depth < current_best.depth:
             print(f"\nfound improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
             current_best = new_decomp
-            if LOGGING and args.budget is None:
+            if LOGGING and not single_budget:
                 wandb.log({"best_depth": current_best.depth})
         else:
             print(f"\nno improvement with budget: {current_budget}")
+            if single_budget: break
         print(f"#sat calls: {num_sat_calls}")
         total_sat_calls += num_sat_calls
         if current_budget >= input_size: break
