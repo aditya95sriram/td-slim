@@ -13,6 +13,7 @@ RANDOM_SEED = 3
 LOGGING = False
 SAVEFIG = False
 FIGCOUNTER = 0
+PICK_DEEPEST = False
 
 # optionally import wandb for logging purposes
 try:
@@ -225,11 +226,21 @@ class TD(object):
                 queue.append(child)
         return desc
 
+    def get_depth(self, node):
+        """returns the virtual depth of a node (real depth + weight)"""
+        data = self.tree.nodes[node]
+        return data["depth"] + data.get("weight", 0)
+
     def extract_subtree(self, budget):
         """extract a subtree that fits the budget (prereq: annotate)"""
         data = self.tree.nodes
         feasible_root = None
-        for leaf in self.leaves:
+        if PICK_DEEPEST:
+            sorted_leaves = sorted(self.leaves, key=self.get_depth, reverse=True)
+        else:
+            sorted_leaves = self.leaves
+        for leaf in sorted_leaves:
+            # print(f"leaf: {leaf}, depth: {self.get_depth(leaf)}")
             node = leaf
             while True:
                 if node == self.root:
@@ -597,11 +608,14 @@ def relabelled(g):
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
+parser.add_argument('-p', '--pick-deepest', action='store_true',
+                    help="If true, always pick subinstance containing deepest leaf, else pick arbitrarily")
 
 if __name__ == '__main__':
     args = parser.parse_args()
     print("got args", args)
     LOGGING = args.logging
+    PICK_DEEPEST = args.pick_deepest
     if args.instance is not None:
         filename = args.instance
     else:
@@ -621,7 +635,7 @@ if __name__ == '__main__':
     if LOGGING:
         basename = os.path.basename(filename)
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
-        wandb.init(project="tdli-bvto", tags=["cluster", instance_type])
+        wandb.init(project="tdli-dl", tags=["workstation", instance_type])
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
