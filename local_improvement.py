@@ -595,6 +595,28 @@ def relabelled(g):
     return nx.convert_node_labels_to_integers(g)
 
 
+def log_depth(filename, depth):
+    api = wandb.Api()
+    runs = api.runs("aditya95sriram/tdli-best", {"config.filename": filename})
+    command = " ".join(sys.argv)
+    if len(runs) > 0:
+        run = runs[0]
+        previous_depth = run.summary["depth"]
+        if previous_depth > depth:
+            run.summary["depth"] = depth
+            run.summary["command"] = command
+            run.summary.update()
+            print(f"###improved known bound {previous_depth}->{depth}")
+        else:
+            print(f"###known bound({previous_depth}) <= current bound({depth})")
+    else:
+        wandb.init(project="tdli-best", reinit=True)
+        wandb.config.filename = filename
+        wandb.log({"depth": depth, "command": command})
+        wandb.join()
+        print("###registered first known bound", depth)
+
+
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
@@ -619,10 +641,11 @@ if __name__ == '__main__':
     current_best = randomized_multiprobe_dfs(input_graph)
     heuristic_depth = current_best.depth
     input_size = len(input_graph)
+    basename = os.path.basename(filename)
+    instance_type, instance_num = os.path.splitext(basename)[0].split("_")
     if LOGGING:
-        basename = os.path.basename(filename)
-        instance_type, instance_num = os.path.splitext(basename)[0].split("_")
-        wandb.init(project="tdli-bvtom", tags=["workstation", instance_type])
+        wandb.init(project="tdli-bvtom", tags=["workstation", instance_type],
+                   reinit=True)
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
@@ -632,7 +655,7 @@ if __name__ == '__main__':
         wandb.config.timeout = args.timeout
     single_budget = args.budget is not None
     if not single_budget:
-        budget_range = range(5,31,5)
+        budget_range = range(5, 31, 5)
         if LOGGING:
             wandb.config.budget = -1
             wandb.log({"best_depth": heuristic_depth})
@@ -664,4 +687,7 @@ if __name__ == '__main__':
                                                                                                 start_depth=heuristic_depth,
                                                                                                 **logdata))
     print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
-    if LOGGING: wandb.log(logdata)
+    if LOGGING:
+        wandb.log(logdata)
+        wandb.join()
+        log_depth(basename, current_best.depth)
