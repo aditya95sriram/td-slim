@@ -3,12 +3,13 @@ import random
 import sys, os
 from operator import itemgetter
 import satencoding
-from itertools import repeat
+from itertools import repeat as _repeat
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
 import matplotlib.pyplot as plt
 from time import time
+import subprocess
 
 RANDOM_SEED = 3
 LOGGING = False
@@ -70,6 +71,12 @@ def find_root(digraph: nx.DiGraph):
 def filter_ancestries(ancestries, graph: nx.Graph):
     return [(u,v) for u,v in ancestries if u in graph and v in graph]
 
+
+def repeat(n, times=None):
+    if times is not None:
+        return _repeat(n, times)
+    else:
+        return _repeat(n)
 
 # treedepth decomposition class
 
@@ -599,20 +606,22 @@ def log_depth(filename, depth):
     api = wandb.Api()
     runs = api.runs("aditya95sriram/tdli-best", {"config.filename": filename})
     command = " ".join(sys.argv)
+    githash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).strip().decode()
     if len(runs) > 0:
         run = runs[0]
         previous_depth = run.summary["depth"]
-        if previous_depth > depth:
+        if previous_depth >= depth:
             run.summary["depth"] = depth
             run.summary["command"] = command
+            run.summary["githash"] = githash
             run.summary.update()
-            print(f"###improved known bound {previous_depth}->{depth}")
+            print(f"###known bound({previous_depth}) >= current bound({depth})")
         else:
-            print(f"###known bound({previous_depth}) <= current bound({depth})")
+            print(f"###known bound({previous_depth}) < current bound({depth})")
     else:
         wandb.init(project="tdli-best", reinit=True)
         wandb.config.filename = filename
-        wandb.log({"depth": depth, "command": command})
+        wandb.log({"depth": depth, "command": command, "githash": githash})
         wandb.join()
         print("###registered first known bound", depth)
 
@@ -620,6 +629,8 @@ def log_depth(filename, depth):
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
+parser.add_argument('-c', '--cap-tries', type=int, default=None,
+                    help="limit the number of attempts with the same budget")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -660,24 +671,25 @@ if __name__ == '__main__':
             wandb.config.budget = -1
             wandb.log({"best_depth": heuristic_depth})
     else:
-        budget_range = repeat(args.budget)
+        budget_range = [args.budget]
         if LOGGING: wandb.config.budget = args.budget
-    for current_budget in budget_range:
-        print("\ntrying budget", current_budget)
-        num_sat_calls = 0
-        new_decomp = local_improvement(current_best, current_budget, draw=False)
-        satencoding.verify_decomp(input_graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
-        if new_decomp.depth < current_best.depth:
-            print(f"\nfound improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
-            current_best = new_decomp
-            if LOGGING and not single_budget:
-                wandb.log({"best_depth": current_best.depth})
-        else:
-            print(f"\nno improvement with budget: {current_budget}")
-            if single_budget: break
-        print(f"#sat calls: {num_sat_calls}")
-        total_sat_calls += num_sat_calls
-        if current_budget >= input_size: break
+    for budget_attempt in budget_range:
+        for current_budget in repeat(budget_attempt, times=args.cap_tries):
+            print("\ntrying budget", current_budget)
+            num_sat_calls = 0
+            new_decomp = local_improvement(current_best, current_budget, draw=False)
+            satencoding.verify_decomp(input_graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
+            if new_decomp.depth < current_best.depth:
+                print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
+                current_best = new_decomp
+                if LOGGING and not single_budget:
+                    wandb.log({"best_depth": current_best.depth})
+            else:
+                print("no improvement with budget:", current_budget)
+                break
+            print(f"#sat calls: {num_sat_calls}")
+            total_sat_calls += num_sat_calls
+        if budget_attempt >= input_size: break
     print("filename:", filename)
     logdata = {"best_depth": current_best.depth,
                "total_sat_calls": total_sat_calls, "time": time() - start_time,
