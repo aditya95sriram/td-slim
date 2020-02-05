@@ -598,11 +598,31 @@ def draw_graph(g):
     plt.show()
 
 
+def read_graph(filename: str):
+    base, ext = os.path.splitext(filename)
+    graph = None
+    if ext == ".gr":
+        graph = satencoding.read_edge(filename)
+    elif ext == ".gml":
+        graph = nx.read_gml(filename)
+    elif ext == ".gexf":
+        graph = nx.read_gexf(filename)
+    elif ext == ".graphml":
+        graph = nx.read_graphml(filename)
+    elif ext == ".dot":
+        graph = nx.drawing.nx_agraph.read_dot(filename)
+    elif ext == ".txt":
+        graph = nx.read_edgelist(filename)
+    else:
+        raise ValueError("invalid graph file format")
+    return nx.Graph(graph)
+
+
 def relabelled(g):
     return nx.convert_node_labels_to_integers(g)
 
 
-def log_depth(filename, depth):
+def log_depth(filename, depth, total_time):
     api = wandb.Api()
     runs = api.runs("aditya95sriram/tdli-best", {"config.filename": filename})
     command = " ".join(sys.argv)
@@ -614,6 +634,7 @@ def log_depth(filename, depth):
             run.summary["depth"] = depth
             run.summary["command"] = command
             run.summary["githash"] = githash
+            run.summary["time"] = total_time
             run.summary.update()
             print(f"###known bound({previous_depth}) >= current bound({depth})")
         else:
@@ -621,7 +642,8 @@ def log_depth(filename, depth):
     else:
         wandb.init(project="tdli-best", reinit=True)
         wandb.config.filename = filename
-        wandb.log({"depth": depth, "command": command, "githash": githash})
+        wandb.log({"depth": depth, "command": command, "githash": githash,
+                   "time": total_time})
         wandb.join()
         print("###registered first known bound", depth)
 
@@ -631,11 +653,13 @@ parser.add_argument('-l', '--logging', action='store_true', help="Log run data t
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
 parser.add_argument('-c', '--cap-tries', type=int, default=None,
                     help="limit the number of attempts with the same budget")
+parser.add_argument('-r', '--random-seed', type=int, default=3, help="random seed")
 
 if __name__ == '__main__':
     args = parser.parse_args()
     print("got args", args)
     LOGGING = args.logging
+    RANDOM_SEED = args.random_seed
     if args.instance is not None:
         filename = args.instance
     else:
@@ -646,16 +670,19 @@ if __name__ == '__main__':
     # _g = nx.grid_2d_graph(grid_dim, grid_dim)
     # _g = nx.convert_node_labels_to_integers(_g)
     # _g = nx.Graph(satencoding.read_edge("../../treedepth-sat/inputs/famous/B10Cage.edge"))
-    input_graph = relabelled(nx.Graph(satencoding.read_edge(filename)))
+    input_graph = relabelled(read_graph(filename))
     random.seed(RANDOM_SEED)
     satencoding.VIRTUALIZE = True
     current_best = randomized_multiprobe_dfs(input_graph)
     heuristic_depth = current_best.depth
     input_size = len(input_graph)
     basename = os.path.basename(filename)
-    instance_type, instance_num = os.path.splitext(basename)[0].split("_")
+    try:
+        instance_type, instance_num = os.path.splitext(basename)[0].split("_")
+    except ValueError:
+        instance_type, instance_num = "other", 0
     if LOGGING:
-        wandb.init(project="tdli-bvtom", tags=["workstation", instance_type],
+        wandb.init(project="tdli3", tags=["cluster", instance_type],
                    reinit=True)
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
@@ -702,4 +729,4 @@ if __name__ == '__main__':
     if LOGGING:
         wandb.log(logdata)
         wandb.join()
-        log_depth(basename, current_best.depth)
+        log_depth(basename, current_best.depth, logdata["time"])
