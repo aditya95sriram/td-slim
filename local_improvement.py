@@ -252,34 +252,41 @@ class TD(object):
                         break
         return None
 
-    def contract(self, local_decomp: 'TD'):
+    def contract(self, local_decomp: 'TD', prev_parent):
         """
         contract subtree rooted at root into single vertex with weight
         desc is the set of descendants of root
         """
-        # add root->subtree into self.contractions
-        root = local_decomp.root
+        new_root = local_decomp.root
         descendants = local_decomp.tree.nodes
-        assert root is not None, "root of local decomp is none"
+        assert new_root is not None, "root of local decomp is none"
         # check if current root is in local instance
         if self.root in descendants:
-            self.root = root  # update with new (possibly same) root
-        self.contractions.append((root, local_decomp))
-        # mark root as leaf
+            self.root = new_root  # update with new (possibly same) root
+        # add new_root->subtree into self.contractions
+        self.contractions.append((new_root, local_decomp))
+        # mark new_root as leaf
         self.leaves -= descendants
-        self.leaves.add(root)
-        # set weight of root
-        weight = local_decomp.depth - 1  # exclusive weight convention
-        self.tree.nodes[root]["weight"] = weight
-        self.graph.nodes[root]["weight"] = weight
-        # update self.graph with contractions
-        for child in descendants - {root}:
+        self.leaves.add(new_root)
+        # update self.graph with contractions and delete erase nodes from self.tree
+        # (to make space for local_decomp.tree)
+        for child in descendants - {new_root}:
             outside_neighbors = set(self.graph.neighbors(child)) - descendants
             for out_nbr in outside_neighbors:
-                self.forced_ancestries.add((out_nbr, root))
+                self.forced_ancestries.add((out_nbr, new_root))
                 # todo[analyze,req] see if some forced ancestries can be removed/transferred directly
-            self.graph = nx.contracted_nodes(self.graph, root, child, self_loops=False)
-            self.tree = nx.contracted_nodes(self.tree, root, child, self_loops=False)
+            self.graph = nx.contracted_nodes(self.graph, new_root, child, self_loops=False)
+        # replace tree with weighted root
+        self.tree.remove_nodes_from(descendants)
+        self.tree.add_node(new_root)
+        if prev_parent is not None: self.tree.add_edge(prev_parent, new_root)
+        # set weight of root
+        weight = local_decomp.depth - 1  # exclusive weight convention
+        self.graph.nodes[new_root]["weight"] = weight
+        self.tree.nodes[new_root]["weight"] = weight
+        # still not enough, remember prev_parent also,
+        # think about graph variants between multi-contract
+        pass
 
     def find_deepest_leaf(self):
         path_lengths = nx.single_source_dijkstra_path_length(self.tree, self.root)
@@ -327,8 +334,9 @@ class TD(object):
                     print("more than 1 decomp returned, disconnected components")
                 for local_decomp in local_decomps:
                     print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
+            prev_parent = None if local_root == self.root else self.get_parent(local_root)
             for local_decomp in local_decomps:
-                self.contract(local_decomp)
+                self.contract(local_decomp, prev_parent)
             self.annotate_subtree()  # maybe more annotations needed
             if self.root in local_nodes:  # reached root of heuristic decomposition
                 break
@@ -405,7 +413,7 @@ def two_step_dfs(graph: nx.Graph, debug=False):
         return TD(dfs2, graph, source2, depth2)
     # todo[analyze]: find bad cases for two-step dfs
 
-
+HEURISTIC_FUNC = randomized_multiprobe_dfs
 # lower bound heuristic
 
 def contraction2clique(graph: nx.Graph, debug=False):
@@ -525,8 +533,11 @@ def linear_search(weights, labels, ancestries, debug=False):
             forced_weight = max(forced_weight, weight)
         else:
             unforced_combined.append((weight, label))
-    unforced_combined.sort(reverse=True)
-    weights, labels = list(zip(*unforced_combined))
+    if unforced_combined:
+        unforced_combined.sort(reverse=True)
+        weights, labels = list(zip(*unforced_combined))
+    else:
+        weights = labels = ()
     mintd = 1e9
     minordering = None
     for i in range(len(weights)+1):
@@ -551,6 +562,7 @@ def linear_search(weights, labels, ancestries, debug=False):
         nx.add_star(mindecomp, (center_label,) + rest)
     nx.add_star(mindecomp, (center_label,) + tuple(forced_children))
     return TD(mindecomp, root=decomp_root, depth=mintd)
+
 
 num_sat_calls = 0
 total_sat_calls = 0
@@ -604,7 +616,7 @@ def read_graph(filename: str):
     if ext == ".gr":
         graph = satencoding.read_edge(filename)
     elif ext == ".gml":
-        graph = nx.read_gml(filename)
+        graph = nx.read_gml(filename, label=None)
     elif ext == ".gexf":
         graph = nx.read_gexf(filename)
     elif ext == ".graphml":
@@ -648,12 +660,43 @@ def log_depth(filename, depth, total_time):
         print("###registered first known bound", depth)
 
 
+def solve_component(graph: nx.Graph, args):
+    global num_sat_calls, total_sat_calls
+    current_best = HEURISTIC_FUNC(graph)
+    single_budget = args.budget is not None
+    if not single_budget:
+        budget_range = range(5, 31, 5)
+    else:
+        budget_range = [args.budget]
+        if LOGGING: wandb.config.budget = args.budget
+    for budget_attempt in budget_range:
+        for current_budget in repeat(budget_attempt, times=args.cap_tries):
+            print("\ntrying budget", current_budget)
+            num_sat_calls = 0
+            new_decomp = local_improvement(current_best, current_budget, draw=False)
+            satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
+            if new_decomp.depth < current_best.depth:
+                print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
+                current_best = new_decomp
+                if LOGGING and not single_budget:
+                    wandb.log({"best_depth": current_best.depth})
+            else:
+                print("no improvement with budget:", current_budget)
+                break
+            print(f"#sat calls: {num_sat_calls}")
+            total_sat_calls += num_sat_calls
+        if budget_attempt >= len(graph): break
+    return current_best
+
+
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
 parser.add_argument('-c', '--cap-tries', type=int, default=None,
                     help="limit the number of attempts with the same budget")
 parser.add_argument('-r', '--random-seed', type=int, default=3, help="random seed")
+parser.add_argument('-j', '--just-sat', action='store_true',
+                    help="don't do local improvement, pass entire instance to sat")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -666,67 +709,62 @@ if __name__ == '__main__':
         filename = "../pace-public/exact_005.gr"
     print("filename:", filename)
     start_time = time()
-    # grid_dim = 6
-    # _g = nx.grid_2d_graph(grid_dim, grid_dim)
-    # _g = nx.convert_node_labels_to_integers(_g)
-    # _g = nx.Graph(satencoding.read_edge("../../treedepth-sat/inputs/famous/B10Cage.edge"))
-    input_graph = relabelled(read_graph(filename))
+    input_graph = read_graph(filename)
     random.seed(RANDOM_SEED)
     satencoding.VIRTUALIZE = True
-    current_best = randomized_multiprobe_dfs(input_graph)
-    heuristic_depth = current_best.depth
-    input_size = len(input_graph)
+    current_depth = 0
+    ncomps = 0
+    for comp in nx.connected_components(input_graph):
+        subgraph = input_graph.subgraph(comp)
+        subtd = HEURISTIC_FUNC(subgraph)
+        if args.just_sat:
+            if args.depth >= 0:
+                subtds = sat_solver(subgraph, min(args.depth, subtd.depth))
+            else:
+                subtds = sat_solver(subgraph, subtd.depth)
+            current_depth = max(current_depth, max(td.depth for td in subtds))
+        else:
+            current_depth = max(current_depth, subtd.depth)
+        ncomps += 1
+    if args.just_sat:
+        print("done (just sat), depth:", current_depth)
+        sys.exit()
     basename = os.path.basename(filename)
     try:
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
     except ValueError:
         instance_type, instance_num = "other", 0
     if LOGGING:
-        wandb.init(project="tdli3", tags=["cluster", instance_type],
+        wandb.init(project="tdli4", tags=["workstation", instance_type],
                    reinit=True)
         wandb.config.instance_num = int(instance_num)
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
         wandb.config.n = len(input_graph)
         wandb.config.m = input_graph.number_of_edges()
-        wandb.config.start_depth = heuristic_depth
+        wandb.config.start_depth = current_depth
         wandb.config.timeout = args.timeout
-    single_budget = args.budget is not None
-    if not single_budget:
-        budget_range = range(5, 31, 5)
-        if LOGGING:
+        if args.budget is None:
             wandb.config.budget = -1
-            wandb.log({"best_depth": heuristic_depth})
-    else:
-        budget_range = [args.budget]
-        if LOGGING: wandb.config.budget = args.budget
-    for budget_attempt in budget_range:
-        for current_budget in repeat(budget_attempt, times=args.cap_tries):
-            print("\ntrying budget", current_budget)
-            num_sat_calls = 0
-            new_decomp = local_improvement(current_best, current_budget, draw=False)
-            satencoding.verify_decomp(input_graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
-            if new_decomp.depth < current_best.depth:
-                print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
-                current_best = new_decomp
-                if LOGGING and not single_budget:
-                    wandb.log({"best_depth": current_best.depth})
-            else:
-                print("no improvement with budget:", current_budget)
-                break
-            print(f"#sat calls: {num_sat_calls}")
-            total_sat_calls += num_sat_calls
-        if budget_attempt >= input_size: break
+            wandb.log({"best_depth": current_depth})
+    best_depth = 0
+    icomp = 1
+    for comp in nx.connected_components(input_graph):
+        print(f"working on comp {icomp}/{ncomps}, size:{len(comp)}")
+        icomp += 1
+        subgraph = input_graph.subgraph(comp)
+        random.seed(RANDOM_SEED)
+        subtd = solve_component(subgraph, args)
+        best_depth = max(best_depth, subtd.depth)
     print("filename:", filename)
-    logdata = {"best_depth": current_best.depth,
-               "total_sat_calls": total_sat_calls, "time": time() - start_time,
-               "final_budget": current_budget}
-    print("done, depth: {best_depth}/{start_depth}, n: {n}, m: {m}, final budget: {final_budget}".format(n=len(input_graph),
-                                                                                                m=input_graph.number_of_edges(),
-                                                                                                start_depth=heuristic_depth,
-                                                                                                **logdata))
+    logdata = {"best_depth": best_depth,
+               "total_sat_calls": total_sat_calls, "time": time() - start_time}
+    print("done, depth: {best_depth}/{start_depth}, n: {n}, m: {m}".format(n=len(input_graph),
+                                                                           m=input_graph.number_of_edges(),
+                                                                           start_depth=current_depth,
+                                                                           **logdata))
     print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
     if LOGGING:
         wandb.log(logdata)
         wandb.join()
-        log_depth(basename, current_best.depth, logdata["time"])
+        log_depth(basename, best_depth, logdata["time"])
