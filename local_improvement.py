@@ -413,7 +413,30 @@ def two_step_dfs(graph: nx.Graph, debug=False):
         return TD(dfs2, graph, source2, depth2)
     # todo[analyze]: find bad cases for two-step dfs
 
+
+def lex_path(graph: nx.Graph, debug=False):
+    """returns vertices in a path by lex order as a treedepth decomposition"""
+    path = nx.DiGraph()
+    nodes = sorted(graph.nodes)
+    nx.add_path(path, nodes)
+    return TD(path, graph, root=nodes[0], depth=len(nodes))
+
+
+def random_path(graph: nx.Graph, debug=False):
+    """returns vertices in a path in random order as a treedepth decomposition"""
+    path = nx.DiGraph()
+    nodes = sorted(graph.nodes)
+    random.shuffle(nodes)
+    nx.add_path(path, nodes)
+    return TD(path, graph, root=nodes[0], depth=len(nodes))
+
+
 HEURISTIC_FUNC = randomized_multiprobe_dfs
+HEURISTIC_FUNCS = {"simple_dfs": simple_dfs,
+                   "randomized_multiprobe_dfs": randomized_multiprobe_dfs,
+                   "two_step_dfs": two_step_dfs,
+                   "lex_path": lex_path,
+                   "random_path": random_path}
 # lower bound heuristic
 
 def contraction2clique(graph: nx.Graph, debug=False):
@@ -699,6 +722,8 @@ parser.add_argument('-j', '--just-sat', action='store_true',
                     help="don't do local improvement, pass entire instance to sat")
 parser.add_argument('--draw-graphs', action='store_true',
                     help="draw intermediate graphs for debugging purposes")
+parser.add_argument('--heuristic', type=str, default="randomized_multiprobe_dfs",
+                    help="heuristic function to be used for initial decomposition")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -706,6 +731,7 @@ if __name__ == '__main__':
     LOGGING = args.logging
     RANDOM_SEED = args.random_seed
     SAVEFIG = args.draw_graphs
+    HEURISTIC_FUNC = HEURISTIC_FUNCS[args.heuristic]
     if args.instance is not None:
         filename = args.instance
     else:
