@@ -613,7 +613,7 @@ def draw_graph(g):
 def read_graph(filename: str):
     base, ext = os.path.splitext(filename)
     graph = None
-    if ext == ".gr":
+    if ext == ".gr" or ext == ".edge":
         graph = satencoding.read_edge(filename)
     elif ext == ".gml":
         graph = nx.read_gml(filename, label=None)
@@ -673,7 +673,7 @@ def solve_component(graph: nx.Graph, args):
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
             print("\ntrying budget", current_budget)
             num_sat_calls = 0
-            new_decomp = local_improvement(current_best, current_budget, draw=False)
+            new_decomp = local_improvement(current_best, current_budget, draw=args.draw_graphs)
             satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
             if new_decomp.depth < current_best.depth:
                 print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
@@ -697,12 +697,15 @@ parser.add_argument('-c', '--cap-tries', type=int, default=None,
 parser.add_argument('-r', '--random-seed', type=int, default=3, help="random seed")
 parser.add_argument('-j', '--just-sat', action='store_true',
                     help="don't do local improvement, pass entire instance to sat")
+parser.add_argument('--draw-graphs', action='store_true',
+                    help="draw intermediate graphs for debugging purposes")
 
 if __name__ == '__main__':
     args = parser.parse_args()
     print("got args", args)
     LOGGING = args.logging
     RANDOM_SEED = args.random_seed
+    SAVEFIG = args.draw_graphs
     if args.instance is not None:
         filename = args.instance
     else:
@@ -732,12 +735,13 @@ if __name__ == '__main__':
     basename = os.path.basename(filename)
     try:
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
+        instance_num = int(instance_num)
     except ValueError:
         instance_type, instance_num = "other", 0
     if LOGGING:
         wandb.init(project="tdli4", tags=["workstation", instance_type],
                    reinit=True)
-        wandb.config.instance_num = int(instance_num)
+        wandb.config.instance_num = instance_num
         wandb.config.filename = basename
         wandb.config.seed = RANDOM_SEED
         wandb.config.n = len(input_graph)
