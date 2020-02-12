@@ -142,6 +142,21 @@ class TD(object):
         plt.close()
         # todo[aesthetic]: draw graph edges in gray
 
+    def write_to_file(self, filename):
+        with open(filename, 'w') as f:
+            if self.depth:
+                f.write(f"{self.depth}\n")
+            else:
+                f.write(find_depth(self.depth, self.root))
+            mapping = dict(enumerate(sorted(self.original_graph.nodes), start=1))
+            invmapping = {v:k for k,v in mapping.items()}
+            for i in range(1, len(self.original_graph)+1):
+                if mapping[i] == self.root:
+                    f.write("0\n")
+                else:
+                    parent = self.get_parent(mapping[i])
+                    f.write(f"{invmapping[parent]}\n")
+
     def add_child(self, parent, child, **kwargs):
         """add a node to the decomposition, optionally as a child to parent"""
         self.leaves.clear()  # no longer consistent
@@ -712,6 +727,15 @@ def solve_component(graph: nx.Graph, args):
     return current_best
 
 
+def write_gr(graph: nx.Graph, filename: str):
+    with open(filename, 'w') as f:
+        f.write("c file generated using python\n")
+        f.write(f"p tdp {graph.number_of_nodes()} {graph.number_of_edges()}\n")
+        mapping = {name: i for i, name in enumerate(sorted(graph.nodes), start=1)}
+        for u, v in graph.edges:
+            f.write(f"{mapping[u]} {mapping[v]}\n")
+
+
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
@@ -779,13 +803,15 @@ if __name__ == '__main__':
             wandb.log({"best_depth": current_depth})
     best_depth = 0
     icomp = 1
+    solutions = []
     for comp in nx.connected_components(input_graph):
         print(f"working on comp {icomp}/{ncomps}, size:{len(comp)}")
-        icomp += 1
         subgraph = input_graph.subgraph(comp)
         random.seed(RANDOM_SEED)
         subtd = solve_component(subgraph, args)
+        solutions.append(subtd)
         best_depth = max(best_depth, subtd.depth)
+        icomp += 1
     print("filename:", filename)
     logdata = {"best_depth": best_depth,
                "total_sat_calls": total_sat_calls, "time": time() - start_time}
@@ -798,3 +824,6 @@ if __name__ == '__main__':
         wandb.log(logdata)
         wandb.join()
         log_depth(basename, best_depth, logdata["time"])
+    write_gr(input_graph, "input.gr")
+    for i, sol in enumerate(solutions, start=1):
+        sol.write_to_file(f"sol{i}.tree")
