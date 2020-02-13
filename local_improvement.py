@@ -165,7 +165,10 @@ class TD(object):
             self.tree.add_edge(parent, child)
 
     def get_parent(self, child):
-        return first(self.tree.predecessors(child))  # todo[optional]: first -> only
+        if child == self.root:
+            return None
+        else:
+            return first(self.tree.predecessors(child))  # todo[optional]: first -> only
 
     def copy(self):
         """return copy of decomposition, does not copy contractions"""
@@ -294,14 +297,15 @@ class TD(object):
         # replace tree with weighted root
         self.tree.remove_nodes_from(descendants)
         self.tree.add_node(new_root)
-        if prev_parent is not None: self.tree.add_edge(prev_parent, new_root)
+        if prev_parent is not None:
+            self.tree.add_edge(prev_parent, new_root)
+            self.tree.nodes[new_root]["depth"] = self.tree.nodes[prev_parent]["depth"] + 1
+        else:
+            self.tree.nodes[new_root]["depth"] = 1  # this is the global root
         # set weight of root
         weight = local_decomp.depth - 1  # exclusive weight convention
         self.graph.nodes[new_root]["weight"] = weight
         self.tree.nodes[new_root]["weight"] = weight
-        # still not enough, remember prev_parent also,
-        # think about graph variants between multi-contract
-        pass
 
     def find_deepest_leaf(self):
         path_lengths = nx.single_source_dijkstra_path_length(self.tree, self.root)
@@ -349,7 +353,7 @@ class TD(object):
                     print("more than 1 decomp returned, disconnected components")
                 for local_decomp in local_decomps:
                     print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
-            prev_parent = None if local_root == self.root else self.get_parent(local_root)
+            prev_parent = self.get_parent(local_root)
             for local_decomp in local_decomps:
                 self.contract(local_decomp, prev_parent)
             self.annotate_subtree()  # maybe more annotations needed
@@ -363,7 +367,7 @@ class TD(object):
             if len(self.tree) == 1:
                 self.tree = local_decomp.tree
             else:
-                parent = self.get_parent(node) if node != self.root else None
+                parent = self.get_parent(node)
                 children = self.tree.successors(node)
                 self.tree.remove_node(node)
                 self.tree = nx.union(self.tree, local_decomp.tree)
@@ -806,8 +810,11 @@ if __name__ == '__main__':
     best_depth = 0
     icomp = 1
     solutions = []
-    for comp in nx.connected_components(input_graph):
+    for comp in sorted(nx.connected_components(input_graph), key=len, reverse=True):
         print(f"working on comp {icomp}/{ncomps}, size:{len(comp)}")
+        if len(comp) <= best_depth:
+            print("skipping comp")
+            continue
         subgraph = input_graph.subgraph(comp)
         random.seed(RANDOM_SEED)
         subtd = solve_component(subgraph, args)
