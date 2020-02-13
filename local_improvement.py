@@ -273,7 +273,7 @@ class TD(object):
         desc is the set of descendants of root
         """
         new_root = local_decomp.root
-        descendants = local_decomp.tree.nodes
+        descendants = set(local_decomp.tree.nodes)
         assert new_root is not None, "root of local decomp is none"
         # check if current root is in local instance
         if self.root in descendants:
