@@ -754,13 +754,18 @@ def log_depth(filename, depth, total_time):
 
 def solve_component(graph: nx.Graph, args):
     global num_sat_calls, total_sat_calls
+    print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     current_best = HEURISTIC_FUNC(graph)
+    print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     single_budget = args.budget is not None
     if not single_budget:
         budget_range = range(5, 31, 5)
     else:
         budget_range = [args.budget]
         if LOGGING: wandb.config.budget = args.budget
+    write_gr(graph, "cache.gr", comments=["command: " + " ".join(sys.argv),
+                                          "githash: " + subprocess.check_output(
+                                              ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
     for budget_attempt in budget_range:
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
             print("\ntrying budget", current_budget)
@@ -770,6 +775,7 @@ def solve_component(graph: nx.Graph, args):
             if new_decomp.depth < current_best.depth:
                 print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
                 current_best = new_decomp
+                current_best.write_to_file("cache.tree")
                 if LOGGING and not single_budget:
                     wandb.log({"best_depth": current_best.depth})
             else:
@@ -901,3 +907,5 @@ if __name__ == '__main__':
         sol.write_to_file(f"sol{i}.tree")
     s = subprocess.check_output(["./verify", "input.gr", "sol1.tree"])
     print("\nExternal verification:", s.decode())
+    os.remove("cache.gr")
+    os.remove("cache.tree")
