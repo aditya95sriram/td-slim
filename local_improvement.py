@@ -15,6 +15,7 @@ RANDOM_SEED = 3
 LOGGING = False
 SAVEFIG = False
 FIGCOUNTER = 0
+DEEPEST_LEAF = False
 
 # optionally import wandb for logging purposes
 try:
@@ -251,11 +252,19 @@ class TD(object):
                 queue.append(child)
         return desc
 
+    def get_leaves(self):
+        leaves = list(self.leaves)
+        if not DEEPEST_LEAF: return leaves
+        data = self.tree.nodes
+        leaves.sort(key=lambda l: data[l]["depth"]+data[l].get("weight", 0),
+                    reverse=True)
+        return leaves
+
     def extract_subtree(self, budget):
         """extract a subtree that fits the budget (prereq: annotate)"""
         data = self.tree.nodes
         feasible_root = None
-        for leaf in self.leaves:
+        for leaf in self.get_leaves():
             node = leaf
             while True:
                 if node == self.root:
@@ -754,6 +763,8 @@ parser.add_argument('--draw-graphs', action='store_true',
                     help="draw intermediate graphs for debugging purposes")
 parser.add_argument('--heuristic', type=str, default="randomized_multiprobe_dfs",
                     help="heuristic function to be used for initial decomposition")
+parser.add_argument('--deepest-leaf', action='store_true',
+                    help="always pick deepest possible leaf for contraction")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -762,6 +773,7 @@ if __name__ == '__main__':
     RANDOM_SEED = args.random_seed
     SAVEFIG = args.draw_graphs
     HEURISTIC_FUNC = HEURISTIC_FUNCS[args.heuristic]
+    DEEPEST_LEAF = args.deepest_leaf
     if args.instance is not None:
         filename = args.instance
     else:
