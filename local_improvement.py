@@ -78,8 +78,8 @@ def repeat(n, times=None):
     else:
         return _repeat(n)
 
-# treedepth decomposition class
 
+# treedepth decomposition class
 class TD(object):
     """class to hold a treedepth decomposition"""
 
@@ -452,6 +452,8 @@ HEURISTIC_FUNCS = {"simple_dfs": simple_dfs,
                    "two_step_dfs": two_step_dfs,
                    "lex_path": lex_path,
                    "random_path": random_path}
+
+
 # lower bound heuristic
 
 def contraction2clique(graph: nx.Graph, debug=False):
@@ -827,3 +829,5 @@ if __name__ == '__main__':
     write_gr(input_graph, "input.gr")
     for i, sol in enumerate(solutions, start=1):
         sol.write_to_file(f"sol{i}.tree")
+    s = subprocess.check_output(["./verify", "input.gr", "sol1.tree"])
+    print("\nExternal verification:", s.decode())
