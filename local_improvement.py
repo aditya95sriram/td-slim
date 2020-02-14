@@ -104,6 +104,9 @@ class TD(object):
         else:
             self.graph = None
 
+    def __repr__(self):
+        return f"<TD object: {list(self.tree.nodes)}>"
+
     def reset(self):
         """
         reset internal variables to prepare for a new wave of local improvements
@@ -254,9 +257,9 @@ class TD(object):
                 queue.append(child)
         return desc
 
-    def get_leaves(self):
+    def get_leaves(self, deepest_first=DEEPEST_LEAF):
         leaves = list(self.leaves)
-        if not DEEPEST_LEAF: return leaves
+        if not deepest_first: return leaves
         data = self.tree.nodes
         leaves.sort(key=lambda l: data[l]["depth"]+data[l].get("weight", 0),
                     reverse=True)
@@ -331,35 +334,53 @@ class TD(object):
         # decomp.annotate()
         # replace previous td with new improved td
         local_nodes = set(decomp.tree.nodes)
+        initial_size = len(local_nodes)
         self.tree.remove_nodes_from(local_nodes)
         self.tree = nx.union(self.tree, decomp.tree)
         if self.root in local_nodes:
             self.root = decomp.root  # update with new (possibly same) root
+            if initial_size == 1:  # only root node
+                return
         if prev_parent is not None:
             self.tree.add_edge(prev_parent, decomp.root)
         self.annotate()
 
-        current_size = initial_size = len(local_nodes)
+        current_size = initial_size
         while current_size > target*initial_size:
             contraction_root = self.extract_subtree(contraction_size, local_nodes)
             if contraction_root is None:
-                center, weights, labels = self.find_weighted_star()
+                center, weights, labels = self.find_weighted_star(local_nodes)
                 contraction_root = center  # contract obstruction
             descendants = self.get_descendants(contraction_root)
             subtd = self.get_subtree(contraction_root)
             parent = self.get_parent(contraction_root)
             self.contract(subtd, parent)
+            if nx.number_connected_components(nx.to_undirected(self.tree)) > 1:
+                print("More than one conn. comp. in tree decomp")
             self.annotate()
             current_size -= (len(descendants) - 1)
+            if set(self.tree.nodes) != set(self.graph.nodes):
+                print(self.tree.nodes - self.graph.nodes, self.graph.nodes - self.tree.nodes)
+                print("stop at", contraction_root)
+                raise RuntimeError("tree nodes and graph nodes do not match")
 
     def find_deepest_leaf(self):
         path_lengths = nx.single_source_dijkstra_path_length(self.tree, self.root)
         return max(path_lengths, key=path_lengths.get)
 
-    def find_weighted_star(self):
+    def find_weighted_star(self, from_subset=None):
         #leaf = first(self.leaves)  # todo[exp]: try pick
-        leaf = self.find_deepest_leaf()
-        parent = self.get_parent(leaf)
+        if from_subset is None:
+            chosen_leaf = self.find_deepest_leaf()
+        else:
+            for leaf in self.get_leaves(deepest_first=True):
+                if leaf in from_subset:
+                    chosen_leaf = leaf
+                    break
+            else:
+                raise RuntimeError("no leaf chosen while finding weighted star")
+        parent = self.get_parent(chosen_leaf)
+        assert parent is not None, "null parent while finding weighted star"
         descendants = self.get_descendants(parent)
         weights = [self.tree.nodes[parent].get("weight", 0)]
         labels = [parent]
@@ -779,7 +800,7 @@ def solve_component(graph: nx.Graph, args):
                 if LOGGING and not single_budget:
                     wandb.log({"best_depth": current_best.depth})
             else:
-                print("no improvement with budget:", current_budget)
+                print(f"no improvement ({current_best.depth}) with budget: {current_budget}")
                 break
             print(f"#sat calls: {num_sat_calls}")
             total_sat_calls += num_sat_calls
@@ -879,6 +900,7 @@ if __name__ == '__main__':
     solutions = []
     for comp in sorted(nx.connected_components(input_graph), key=len, reverse=True):
         print(f"working on comp {icomp}/{ncomps}, size:{len(comp)}")
+        icomp += 1
         if len(comp) <= best_depth:
             print("skipping comp")
             continue
@@ -887,7 +909,6 @@ if __name__ == '__main__':
         subtd = solve_component(subgraph, args)
         solutions.append(subtd)
         best_depth = max(best_depth, subtd.depth)
-        icomp += 1
     print("filename:", filename)
     logdata = {"best_depth": best_depth,
                "total_sat_calls": total_sat_calls, "time": time() - start_time}
