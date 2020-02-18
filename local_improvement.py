@@ -10,6 +10,7 @@ from networkx.drawing.nx_agraph import graphviz_layout
 import matplotlib.pyplot as plt
 from time import time
 import subprocess
+from typing import List
 
 RANDOM_SEED = 3
 LOGGING = False
@@ -18,6 +19,7 @@ FIGCOUNTER = 0
 DEEPEST_LEAF = False
 PARTIAL_CONTRACTION = False
 CONTRACTION_SIZE = 3
+PARTIAL_CONTRACT_BY_DEPTH = False
 
 # optionally import wandb for logging purposes
 try:
@@ -45,7 +47,7 @@ def pick(obj):
     return random.sample(obj, 1)[0]
 
 
-def find_depth(dtree, root, return_deepest=False):
+def find_depth(dtree, root, return_deepest=False, ignore_weights=False):
     """
     find the depth of a tree (directed or undirected)
     fails if there are directed or undirected cycles
@@ -56,7 +58,7 @@ def find_depth(dtree, root, return_deepest=False):
     queue = [(root, 1)]
     while queue:
         node, depth = queue.pop(0)
-        nodeweight = dtree.nodes[node].get("weight", 0)
+        nodeweight = 0 if ignore_weights else dtree.nodes[node].get("weight", 0)
         if depth + nodeweight > maxdepth:
             maxdepth = depth + nodeweight
             deepest = node
@@ -295,77 +297,136 @@ class TD(object):
                         break
         return None
 
-    def contract(self, local_decomp: 'TD', prev_parent):
+    def contract(self, local_root):
         """
-        contract subtree rooted at root into single vertex with weight
-        desc is the set of descendants of root
+        contract subtree rooted at local_root into single vertex,
+        also update weight, ancestry and annotations accordingly
         """
-        new_root = local_decomp.root
-        descendants = set(local_decomp.tree.nodes)
-        assert new_root is not None, "root of local decomp is none"
-        # check if current root is in local instance
-        if self.root in descendants:
-            self.root = new_root  # update with new (possibly same) root
-        # add new_root->subtree into self.contractions
-        self.contractions.append((new_root, local_decomp))
-        # mark new_root as leaf
-        self.leaves -= descendants
-        self.leaves.add(new_root)
-        # update self.graph with contractions and delete erase nodes from self.tree
-        # (to make space for local_decomp.tree)
-        for child in descendants - {new_root}:
-            outside_neighbors = set(self.graph.neighbors(child)) - descendants
-            for out_nbr in outside_neighbors:
-                self.forced_ancestries.add((out_nbr, new_root))
+        children = self.get_descendants(local_root) - {local_root}
+        subtree = self.get_subtree(local_root)
+        # update global list of contractions
+        self.contractions.append((local_root, subtree))
+        # set weight of local root
+        current_weight = self.tree.nodes[local_root].get("weight", 0)
+        assert current_weight == self.graph.nodes[local_root].get("weight", 0), f"weight attribute mismatch at {local_root}"
+        new_weight = max(current_weight, subtree.depth - 1)  # for our case, current_weight is always 0
+        self.tree.nodes[local_root]["weight"] = new_weight
+        self.graph.nodes[local_root]["weight"] = new_weight
+        # update ancestry
+        potential_ancestors = nx.shortest_path(self.tree, self.root, local_root)
+        for child in children:
+            for potential_ancestor in potential_ancestors:
+                if self.graph.has_edge(potential_ancestor, child):
+                    self.forced_ancestries.add((potential_ancestor, local_root))
+                    # todo[analyze,req] see if some forced ancestries can be removed/transferred directly
+            self.graph = nx.contracted_nodes(self.graph, local_root, child, self_loops=False)
+        # delete subtree
+        self.tree.remove_nodes_from(children)
+        # other book-keeping
+        # todo[safe] could replace with single call to annotate
+        self.leaves -= children
+        self.leaves.add(local_root)
+        subtree_size = len(subtree.tree) - 1
+        for ancestor in potential_ancestors:
+            self.tree.nodes[ancestor]["subtree"] -= subtree_size
+
+    def push_up(self, node):
+        assert node != self.root, "cannot push root up"
+        parent = self.get_parent(node)
+        node_weight = self.tree.nodes[node].get("weight", 0)
+        prev_parent_weight = self.tree.nodes[parent].get("weight", 0)
+        new_parent_weight = max(prev_parent_weight, node_weight + 1)
+        self.tree.nodes[parent]["weight"] = new_parent_weight
+        self.graph.nodes[parent]["weight"] = new_parent_weight
+        potential_ancestors = nx.shortest_path(self.tree, self.root, parent)
+        for potential_ancestor in potential_ancestors:
+            if self.graph.has_edge(potential_ancestor, node):
+                self.forced_ancestries.add((potential_ancestor, parent))
                 # todo[analyze,req] see if some forced ancestries can be removed/transferred directly
-            self.graph = nx.contracted_nodes(self.graph, new_root, child, self_loops=False)
-        # replace tree with weighted root
-        self.tree.remove_nodes_from(descendants)
-        self.tree.add_node(new_root)
-        if prev_parent is not None:
-            self.tree.add_edge(prev_parent, new_root)
-            self.tree.nodes[new_root]["depth"] = self.tree.nodes[prev_parent]["depth"] + 1
-        else:
-            self.tree.nodes[new_root]["depth"] = 1  # this is the global root
-        # set weight of root
-        weight = local_decomp.depth - 1  # exclusive weight convention
-        self.graph.nodes[new_root]["weight"] = weight
-        self.tree.nodes[new_root]["weight"] = weight
+        self.leaves.remove(node)
+        self.graph = nx.contracted_nodes(self.graph, parent, node, self_loops=False)
+        self.tree.remove_node(node)
+        dtree = nx.DiGraph([(parent, node)])
+        self.contractions.append((parent, TD(dtree, None, root=parent)))
+        if self.tree.out_degree(parent) == 0: self.leaves.add(parent)
+        for ancestor in potential_ancestors:
+            self.tree.nodes[ancestor]["subtree"] -= 1
 
-    def partial_contract(self, local_decomp: 'TD', prev_parent, contraction_size, target):
-        decomp = local_decomp.copy()
-        # decomp.annotate()
-        # replace previous td with new improved td
-        local_nodes = set(decomp.tree.nodes)
+    def partial_contract_subroutine(self, contraction_size, local_nodes: set):
+        """
+        subroutine for partial contraction,
+        returns True only if something was contracted
+        """
+        contraction_root = self.extract_subtree(contraction_size, local_nodes)
+        if contraction_root is None:
+            center, weights, labels = self.find_weighted_star(local_nodes)
+            contraction_root = center  # contract obstruction
+        descendants = self.get_descendants(contraction_root) - {contraction_root}
+        if not descendants:
+            print("#### no contraction made because no descendants")
+            return False
+        self.contract(contraction_root)
+        local_nodes.difference_update(descendants)
+        return True
+
+    def partial_contract_by_size(self, local_root, contraction_size, target):
+        """
+        partially contract subtree rooted at local_root,
+        until target ratio is achieved
+        """
+        subtree = self.get_subtree(local_root)
+        local_nodes = set(subtree.tree.nodes)
         initial_size = len(local_nodes)
-        self.tree.remove_nodes_from(local_nodes)
-        self.tree = nx.union(self.tree, decomp.tree)
-        if self.root in local_nodes:
-            self.root = decomp.root  # update with new (possibly same) root
-            if initial_size == 1:  # only root node
-                return
-        if prev_parent is not None:
-            self.tree.add_edge(prev_parent, decomp.root)
-        self.annotate()
 
-        current_size = initial_size
-        while current_size > target*initial_size:
-            contraction_root = self.extract_subtree(contraction_size, local_nodes)
-            if contraction_root is None:
-                center, weights, labels = self.find_weighted_star(local_nodes)
-                contraction_root = center  # contract obstruction
-            descendants = self.get_descendants(contraction_root)
-            subtd = self.get_subtree(contraction_root)
-            parent = self.get_parent(contraction_root)
-            self.contract(subtd, parent)
-            if nx.number_connected_components(nx.to_undirected(self.tree)) > 1:
-                print("More than one conn. comp. in tree decomp")
-            self.annotate()
-            current_size -= (len(descendants) - 1)
-            if set(self.tree.nodes) != set(self.graph.nodes):
-                print(self.tree.nodes - self.graph.nodes, self.graph.nodes - self.tree.nodes)
-                print("stop at", contraction_root)
-                raise RuntimeError("tree nodes and graph nodes do not match")
+        if initial_size == 1:
+            # push to parent
+            print(f"#### single node contraction requested, pushing up")
+            self.push_up(local_root)
+            return
+
+        changed = True
+        while len(local_nodes) > target*initial_size and changed:
+            changed = self.partial_contract_subroutine(contraction_size, local_nodes)
+
+    def partial_contract_by_depth(self, local_root, contraction_size, target):
+        """
+        partially contract subtree rooted at local_root,
+        until target decrease in depth is achieved
+        """
+        subtree = self.get_subtree(local_root)
+        local_nodes = set(subtree.tree.nodes)
+        initial_depth = find_depth(self.tree, local_root, ignore_weights=True)
+        target_depth = max(initial_depth - target, 1)
+
+        changed = True
+        while find_depth(self.tree, local_root, ignore_weights=True) > target_depth and changed:
+            changed = self.partial_contract_subroutine(contraction_size, local_nodes)
+
+    def improve(self, local_root, new_decomps: List['TD']):
+        """
+        replaces subtree rooted at local_root with new_decomps
+        """
+        if local_root == self.root:  # replace entire decomp
+            assert len(new_decomps) == 1, "Global decomp contains more than one component"
+            decomp = new_decomps[0]
+            self.tree = decomp.tree
+            self.root = decomp.root
+            self.depth = decomp.depth
+        else:
+            parent = self.get_parent(local_root)
+            prev_descendants = self.get_descendants(local_root)
+            new_descendants = set()
+            for decomp in new_decomps:
+                descendants = set(decomp.tree.nodes)
+                assert descendants.issubset(prev_descendants), "improved decomposition contains foreign nodes:" \
+                                                               f"{descendants-prev_descendants}"
+                new_descendants.update(descendants)
+                self.tree.remove_nodes_from(descendants)
+                self.tree = nx.union(self.tree, decomp.tree)
+                self.tree.add_edge(parent, decomp.root)
+            if new_descendants != prev_descendants:
+                print(f"#### missing nodes in improved decomposition: {new_descendants} vs {prev_descendants}")
+        self.annotate()  # todo[opt] only update changed annotations
 
     def find_deepest_leaf(self):
         path_lengths = nx.single_source_dijkstra_path_length(self.tree, self.root)
@@ -422,12 +483,18 @@ class TD(object):
                     print("more than 1 decomp returned, disconnected components")
                 for local_decomp in local_decomps:
                     print(f"old root:{local_root}\tnodes:{local_nodes}\ttd:{local_decomp.depth}\tnew root:{local_decomp.root}")
-            prev_parent = self.get_parent(local_root)
+            if local_decomps:
+                self.improve(local_root, local_decomps)
+            else:  # no improvement found, just do contraction
+                local_decomps = [self.get_subtree(local_root)]
             for local_decomp in local_decomps:
                 if PARTIAL_CONTRACTION:
-                    self.partial_contract(local_decomp, prev_parent, CONTRACTION_SIZE, 0.5)
+                    if PARTIAL_CONTRACT_BY_DEPTH:
+                        self.partial_contract_by_depth(local_decomp.root, CONTRACTION_SIZE, 2)
+                    else:
+                        self.partial_contract_by_size(local_decomp.root, CONTRACTION_SIZE, 0.5)
                 else:
-                    self.contract(local_decomp, prev_parent)
+                    self.contract(local_decomp.root)
             self.annotate_subtree()  # maybe more annotations needed
             if self.root in local_nodes:  # reached root of heuristic decomposition
                 break
@@ -850,6 +917,8 @@ parser.add_argument('--deepest-leaf', action='store_true',
                     help="always pick deepest possible leaf for contraction")
 parser.add_argument('-p', '--partial-contraction', type=int, default=0,
                     help="partial contraction size, do not contract entire subtree (target=budget/2)")
+parser.add_argument('--partial-contract-by-depth', action='store_true',
+                    help="partial contract by depth instead of size, reduce by 2 layers")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -864,6 +933,7 @@ if __name__ == '__main__':
         PARTIAL_CONTRACTION = True
     else:
         PARTIAL_CONTRACTION = False
+    PARTIAL_CONTRACT_BY_DEPTH = args.partial_contract_by_depth
     if args.instance is not None:
         filename = args.instance
     else:
