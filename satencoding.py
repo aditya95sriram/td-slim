@@ -424,12 +424,13 @@ def main(args, debug=False):
     if args.width != -1:
         return
     ncomps = nx.number_connected_components(g)
-    icomp = 1
+    icomp = 0
     global_lb, global_ub = 1e9, -1
     if ncomps == 0:  # only empty graph remains after preprocessing, for loop won't be triggered
         global_lb = global_ub = 0
     decomptrees = []
     for comp_nodes in nx.connected_components(g):
+        icomp += 1
         subgraph = g.subgraph(comp_nodes)
         if debug: print("\ncomponent", icomp, "of", ncomps, file=sys.stderr)
         if len(subgraph) == 1:
@@ -438,7 +439,6 @@ def main(args, debug=False):
             if debug: print("single node component")
             global_lb = min(global_lb, nodeweight+1)
             global_ub = max(global_ub, nodeweight+1)
-            icomp += 1
             decomptree = nx.DiGraph()
             decomptree.add_node(singlenode, weight=nodeweight)
             decomptrees.append(decomptree)
@@ -457,6 +457,9 @@ def main(args, debug=False):
         component.graph["forced_ancestries"] = remapped_ancestries
         if debug: print("weights:", component.nodes.data("weight", default=0))
         i, lb, ub, to, encoding_time, solving_time = solve_component(component, args)
+        if ub == 0:  # not a single YES-instance, so no tree decomp
+            print("#### no yes-instances, nothing appended")
+            continue
         sol_file = os.path.join(args.temp, instance + '_' + str(ub + 1) + ".sol")
         decomptree = decode_output(sol=sol_file, g=component, reqwidth=ub + 1,
                                return_decomp=True)
@@ -472,7 +475,6 @@ def main(args, debug=False):
         if debug: print("* component treedepth range: [{}-{}]".format(lb, ub), file=sys.stderr)
         global_lb = min(global_lb, lb)
         global_ub = max(global_ub, ub)
-        icomp += 1
         decomptrees.append(decomptree)
     print("* final treedepth:", end="", file=sys.stderr)
     if global_ub == global_lb:

@@ -29,6 +29,9 @@ except ImportError:
 
 # utility functions
 
+def always_true(x):
+    return True
+
 def first(obj):
     """
     return first element from object
@@ -275,15 +278,15 @@ class TD(object):
         """extract a subtree that fits the budget (prereq: annotate)"""
         data = self.tree.nodes
         feasible_root = None
-        if from_subset is None: from_subset = self.tree.nodes
+        in_subset = always_true if from_subset is None else from_subset.__contains__
         for leaf in self.get_leaves():
-            if leaf not in from_subset: continue
+            if not in_subset(leaf): continue
             node = leaf
             while True:
                 if node == self.root:
                     return self.root
                 parent = self.get_parent(node)
-                if data[parent]["subtree"] <= budget:
+                if in_subset(parent) and data[parent]["subtree"] <= budget:
                     feasible_root = node = parent
                 else:
                     if feasible_root is not None:
@@ -641,7 +644,9 @@ def linear_search(weights, labels, ancestries, debug=False):
             forced_children.add(child)
     forced_weight = 0
     unforced_combined = []
+    weight_mapping = {center_label: center}
     for weight, label in zip(weights[1:], labels[1:]):
+        weight_mapping[label] = weight
         if label in forced_children:
             forced_weight = max(forced_weight, weight)
         else:
@@ -674,6 +679,9 @@ def linear_search(weights, labels, ancestries, debug=False):
     if rest:
         nx.add_star(mindecomp, (center_label,) + rest)
     nx.add_star(mindecomp, (center_label,) + tuple(forced_children))
+    # replicate weights
+    for label, weight in weight_mapping.items():
+        mindecomp.nodes[label]["weight"] = weight
     return TD(mindecomp, root=decomp_root, depth=mintd)
 
 
@@ -684,11 +692,10 @@ def sat_solver(graph: nx.Graph, known_depth=-1):
     global num_sat_calls
     num_sat_calls += 1
     ingraphsize = len(graph)
-    lb, ub, decomptrees = satencoding.main(get_args(graph, known_depth))
+    _, _, decomptrees = satencoding.main(get_args(graph, known_depth))
     decompsize = sum(map(len, decomptrees))
     if decompsize != ingraphsize:
-        draw_graph(graph)
-        raise ValueError(f"decomp mismatch {ingraphsize} {decompsize}")
+        print(f"#### decomp mismatch {ingraphsize} {decompsize}")
     decomps = []
     for decomptree in decomptrees:
         droot = find_root(decomptree)
@@ -723,6 +730,13 @@ def draw_graph(g):
     plt.show()
 
 
+def no_data_graph(graph):
+    new_graph = graph.__class__()
+    new_graph.add_nodes_from(graph)
+    new_graph.add_edges_from(graph.edges)
+    return new_graph
+
+
 def read_graph(filename: str):
     base, ext = os.path.splitext(filename)
     graph = None
@@ -740,7 +754,7 @@ def read_graph(filename: str):
         graph = nx.read_edgelist(filename)
     else:
         raise ValueError("invalid graph file format")
-    return nx.Graph(graph)
+    return no_data_graph(nx.Graph(graph))
 
 
 def relabelled(g):
@@ -928,5 +942,5 @@ if __name__ == '__main__':
         sol.write_to_file(f"sol{i}.tree")
     s = subprocess.check_output(["./verify", "input.gr", "sol1.tree"])
     print("\nExternal verification:", s.decode())
-    os.remove("cache.gr")
-    os.remove("cache.tree")
+    if os.path.isfile("cache.gr"): os.remove("cache.gr")
+    if os.path.isfile("cache.tree"): os.remove("cache.tree")
