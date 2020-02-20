@@ -3,13 +3,14 @@ import random
 import sys, os
 from operator import itemgetter
 import satencoding
-from itertools import repeat as _repeat
+from itertools import repeat as _repeat, cycle
+import subprocess
+import signal
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
 import matplotlib.pyplot as plt
 from time import time
-import subprocess
 from typing import List
 
 RANDOM_SEED = 3
@@ -34,6 +35,7 @@ except ImportError:
 
 def always_true(x):
     return True
+
 
 def first(obj):
     """
@@ -81,8 +83,8 @@ def filter_ancestries(ancestries, graph: nx.Graph):
     return [(u,v) for u,v in ancestries if u in graph and v in graph]
 
 
-def repeat(n, times=None):
-    if times is not None:
+def repeat(n, times=-1):
+    if times >= 0:
         return _repeat(n, times)
     else:
         return _repeat(n)
@@ -859,10 +861,11 @@ def log_depth(filename, depth, total_time):
         print("###registered first known bound", depth)
 
 
-def solve_component(graph: nx.Graph, args):
+def solve_component(graph: nx.Graph, args, solution: 'Solution'):
     global num_sat_calls, total_sat_calls
     print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     current_best = HEURISTIC_FUNC(graph)
+    solution.update(current_best)
     print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     single_budget = args.budget is not None
     if not single_budget:
@@ -873,13 +876,18 @@ def solve_component(graph: nx.Graph, args):
     write_gr(graph, "cache.gr", comments=["command: " + " ".join(sys.argv),
                                           "githash: " + subprocess.check_output(
                                               ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
-    for budget_attempt in budget_range:
+    for budget_attempt in cycle(budget_range):  # use itertools.cycle
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
             print("\ntrying budget", current_budget)
             num_sat_calls = 0
-            new_decomp = local_improvement(current_best, current_budget, draw=args.draw_graphs)
+            try:
+                new_decomp = local_improvement(current_best, current_budget, draw=args.draw_graphs)
+            except SolverInterrupt:
+                print("caught interrupt during subroutine")
+                return current_best
             satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
             if new_decomp.depth < current_best.depth:
+                solution.update(current_best)
                 print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
                 current_best = new_decomp
                 current_best.write_to_file("cache.tree")
@@ -906,10 +914,29 @@ def write_gr(graph: nx.Graph, filename: str, comments = None):
             f.write(f"{mapping[u]} {mapping[v]}\n")
 
 
+class Solution(object):
+    def __init__(self):
+        self.value = None
+
+    def update(self, new_value):
+        self.value = new_value
+
+
+class SolverInterrupt(BaseException): pass
+
+
+def term_handler(signum, frame):
+    print("#### received signal", signum)
+    raise SolverInterrupt
+
+
+# SIGHUP SIGINT SIGUSR1 SIGUSR2 SIGTERM SIGSTOP
+catch_signals = [1, 2, 10, 12, 15]
+
 parser = satencoding.parser
 parser.add_argument('-l', '--logging', action='store_true', help="Log run data to wandb")
 parser.add_argument('-b', '--budget', type=int, help="budget for local instances")
-parser.add_argument('-c', '--cap-tries', type=int, default=None,
+parser.add_argument('-c', '--cap-tries', type=int, default=-1,
                     help="limit the number of attempts with the same budget")
 parser.add_argument('-r', '--random-seed', type=int, default=3, help="random seed")
 parser.add_argument('-j', '--just-sat', action='store_true',
@@ -948,6 +975,8 @@ if __name__ == '__main__':
     else:
         filename = "../pace-public/exact_005.gr"
     print("filename:", filename)
+    for signalnum in catch_signals:
+        signal.signal(signalnum, term_handler)
     start_time = time()
     input_graph = read_graph(filename)
     random.seed(RANDOM_SEED)
@@ -999,7 +1028,14 @@ if __name__ == '__main__':
             continue
         subgraph = input_graph.subgraph(comp)
         random.seed(RANDOM_SEED)
-        subtd = solve_component(subgraph, args)
+        solution = Solution()
+        try:
+            subtd = solve_component(subgraph, args, solution)
+        except SolverInterrupt:
+            if ncomps > 1:
+                print("interrupted during multi-component instance, results could be invalid")
+            print("caught interrupt outside subroutine")
+            subtd = solution.value
         solutions.append(subtd)
         best_depth = max(best_depth, subtd.depth)
     print("filename:", filename)
