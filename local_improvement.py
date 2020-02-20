@@ -20,6 +20,7 @@ DEEPEST_LEAF = False
 PARTIAL_CONTRACTION = False
 CONTRACTION_SIZE = 3
 PARTIAL_CONTRACT_BY_DEPTH = False
+MAXSAT = False
 
 # optionally import wandb for logging purposes
 try:
@@ -314,6 +315,7 @@ class TD(object):
         self.graph.nodes[local_root]["weight"] = new_weight
         # update ancestry
         potential_ancestors = nx.shortest_path(self.tree, self.root, local_root)
+        potential_ancestors.pop()  # remove local_root
         for child in children:
             for potential_ancestor in potential_ancestors:
                 if self.graph.has_edge(potential_ancestor, child):
@@ -759,7 +761,10 @@ def sat_solver(graph: nx.Graph, known_depth=-1):
     global num_sat_calls
     num_sat_calls += 1
     ingraphsize = len(graph)
-    _, _, decomptrees = satencoding.main(get_args(graph, known_depth))
+    if MAXSAT:
+        decomptrees = satencoding.main_max(get_args(graph, known_depth))
+    else:
+        decomptrees = satencoding.main(get_args(graph, known_depth))
     decompsize = sum(map(len, decomptrees))
     if decompsize != ingraphsize:
         print(f"#### decomp mismatch {ingraphsize} {decompsize}")
@@ -908,17 +913,20 @@ parser.add_argument('-c', '--cap-tries', type=int, default=None,
                     help="limit the number of attempts with the same budget")
 parser.add_argument('-r', '--random-seed', type=int, default=3, help="random seed")
 parser.add_argument('-j', '--just-sat', action='store_true',
-                    help="don't do local improvement, pass entire instance to sat")
+                    help="one-shot SAT encoding, don't do local improvement")
 parser.add_argument('--draw-graphs', action='store_true',
                     help="draw intermediate graphs for debugging purposes")
 parser.add_argument('--heuristic', type=str, default="randomized_multiprobe_dfs",
-                    help="heuristic function to be used for initial decomposition")
+                    help="heuristic function to be used for initial decomposition "
+                         "[randomized_multiprobe_dfs*, simple_dfs, two_step_dfs, lex_path, random_path")
 parser.add_argument('--deepest-leaf', action='store_true',
                     help="always pick deepest possible leaf for contraction")
 parser.add_argument('-p', '--partial-contraction', type=int, default=0,
                     help="partial contraction size, do not contract entire subtree (target=budget/2)")
 parser.add_argument('--partial-contract-by-depth', action='store_true',
                     help="partial contract by depth instead of size, reduce by 2 layers")
+parser.add_argument('-m', '--max-sat', action='store_true',
+                    help="use MaxSAT instead of linear search SAT")
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -934,6 +942,7 @@ if __name__ == '__main__':
     else:
         PARTIAL_CONTRACTION = False
     PARTIAL_CONTRACT_BY_DEPTH = args.partial_contract_by_depth
+    MAXSAT = args.max_sat
     if args.instance is not None:
         filename = args.instance
     else:
