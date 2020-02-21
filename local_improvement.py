@@ -6,6 +6,7 @@ import satencoding
 from itertools import repeat as _repeat, cycle
 import subprocess
 import signal
+import math
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
@@ -19,7 +20,7 @@ SAVEFIG = False
 FIGCOUNTER = 0
 DEEPEST_LEAF = False
 PARTIAL_CONTRACTION = False
-CONTRACTION_SIZE = 3
+CONTRACTION_RATIO = 3
 PARTIAL_CONTRACT_BY_DEPTH = False
 MAXSAT = False
 
@@ -493,10 +494,11 @@ class TD(object):
                 local_decomps = [self.get_subtree(local_root)]
             for local_decomp in local_decomps:
                 if PARTIAL_CONTRACTION:
+                    contraction_size = int(math.ceil(budget * CONTRACTION_RATIO))
                     if PARTIAL_CONTRACT_BY_DEPTH:
-                        self.partial_contract_by_depth(local_decomp.root, CONTRACTION_SIZE, 2)
+                        self.partial_contract_by_depth(local_decomp.root, contraction_size, 2)
                     else:
-                        self.partial_contract_by_size(local_decomp.root, CONTRACTION_SIZE, 0.5)
+                        self.partial_contract_by_size(local_decomp.root, contraction_size, 0.5)
                 else:
                     self.contract(local_decomp.root)
             self.annotate_subtree()  # maybe more annotations needed
@@ -843,7 +845,8 @@ def log_depth(filename, depth, total_time):
     if len(runs) > 0:
         run = runs[0]
         previous_depth = run.summary["depth"]
-        if previous_depth >= depth:
+        previous_time = run.summary["time"]
+        if previous_depth > depth or (previous_depth == depth and previous_time > total_time):
             run.summary["depth"] = depth
             run.summary["command"] = command
             run.summary["githash"] = githash
@@ -869,14 +872,13 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
     print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     single_budget = args.budget is not None
     if not single_budget:
-        budget_range = range(5, 31, 5)
+        budget_range = range(5, 41, 5)
     else:
         budget_range = [args.budget]
-        if LOGGING: wandb.config.budget = args.budget
     write_gr(graph, "cache.gr", comments=["command: " + " ".join(sys.argv),
                                           "githash: " + subprocess.check_output(
                                               ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
-    for budget_attempt in cycle(budget_range):  # use itertools.cycle
+    for budget_attempt in cycle(budget_range):
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
             print("\ntrying budget", current_budget)
             num_sat_calls = 0
@@ -891,7 +893,7 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
                 print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
                 current_best = new_decomp
                 current_best.write_to_file("cache.tree")
-                if LOGGING and not single_budget:
+                if LOGGING:
                     wandb.log({"best_depth": current_best.depth})
             else:
                 print(f"no improvement ({current_best.depth}) with budget: {current_budget}")
@@ -948,8 +950,9 @@ parser.add_argument('--heuristic', type=str, default="randomized_multiprobe_dfs"
                          "[randomized_multiprobe_dfs*, simple_dfs, two_step_dfs, lex_path, random_path")
 parser.add_argument('--deepest-leaf', action='store_true',
                     help="always pick deepest possible leaf for contraction")
-parser.add_argument('-p', '--partial-contraction', type=int, default=0,
-                    help="partial contraction size, do not contract entire subtree (target=budget/2)")
+parser.add_argument('-p', '--partial-contraction', type=float, default=0.2,
+                    help="partial contraction ratio w.r.t budget, "
+                         "do not contract entire subtree (target=budget/2)")
 parser.add_argument('--partial-contract-by-depth', action='store_true',
                     help="partial contract by depth instead of size, reduce by 2 layers")
 parser.add_argument('-m', '--max-sat', action='store_true',
@@ -963,8 +966,8 @@ if __name__ == '__main__':
     SAVEFIG = args.draw_graphs
     HEURISTIC_FUNC = HEURISTIC_FUNCS[args.heuristic]
     DEEPEST_LEAF = args.deepest_leaf
-    CONTRACTION_SIZE = args.partial_contraction
-    if CONTRACTION_SIZE > 0:
+    CONTRACTION_RATIO = args.partial_contraction
+    if CONTRACTION_RATIO > 0:
         PARTIAL_CONTRACTION = True
     else:
         PARTIAL_CONTRACTION = False
@@ -1005,7 +1008,7 @@ if __name__ == '__main__':
     except ValueError:
         instance_type, instance_num = "other", 0
     if LOGGING:
-        wandb.init(project="tdli4", tags=["workstation", instance_type],
+        wandb.init(project="tdliexp1", tags=["cluster", instance_type],
                    reinit=True)
         wandb.config.instance_num = instance_num
         wandb.config.filename = basename
@@ -1014,9 +1017,14 @@ if __name__ == '__main__':
         wandb.config.m = input_graph.number_of_edges()
         wandb.config.start_depth = current_depth
         wandb.config.timeout = args.timeout
+        wandb.config.satstrat = "maxsat" if MAXSAT else "sat"
+        wandb.config.partial_contraction = "depth" if PARTIAL_CONTRACT_BY_DEPTH else "size"
+        wandb.config.contraction_ratio = CONTRACTION_RATIO
         if args.budget is None:
             wandb.config.budget = -1
             wandb.log({"best_depth": current_depth})
+        else:
+            wandb.config.budget = args.budget
     best_depth = 0
     icomp = 1
     solutions = []
@@ -1046,16 +1054,17 @@ if __name__ == '__main__':
                                                                            start_depth=current_depth,
                                                                            **logdata))
     print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
-    if LOGGING:
-        wandb.log(logdata)
-        wandb.join()
-        log_depth(basename, best_depth, logdata["time"])
     write_gr(input_graph, "input.gr", comments=[f"file: {basename}",
                                                 "command: " + " ".join(sys.argv),
-                                                "githash: " + subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
+                                                "githash: " + subprocess.check_output(
+                                                    ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
     for i, sol in enumerate(solutions, start=1):
         sol.write_to_file(f"sol{i}.tree")
     s = subprocess.check_output(["./verify", "input.gr", "sol1.tree"])
     print("\nExternal verification:", s.decode())
     if os.path.isfile("cache.gr"): os.remove("cache.gr")
     if os.path.isfile("cache.tree"): os.remove("cache.tree")
+    if LOGGING:
+        wandb.log(logdata)
+        wandb.join()
+        log_depth(basename, best_depth, logdata["time"])
