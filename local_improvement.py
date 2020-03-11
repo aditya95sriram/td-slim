@@ -845,7 +845,7 @@ def log_depth(filename, depth, total_time):
     if len(runs) > 0:
         run = runs[0]
         previous_depth = run.summary["depth"]
-        previous_time = run.summary["time"]
+        previous_time = run.summary.get("time", 1e6)
         if previous_depth > depth or (previous_depth == depth and previous_time > total_time):
             run.summary["depth"] = depth
             run.summary["command"] = command
@@ -878,6 +878,7 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
     write_gr(graph, "cache.gr", comments=["command: " + " ".join(sys.argv),
                                           "githash: " + subprocess.check_output(
                                               ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
+    no_improvement_count = 0
     for budget_attempt in cycle(budget_range):
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
             print("\ntrying budget", current_budget)
@@ -890,17 +891,22 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
             satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
             if new_decomp.depth < current_best.depth:
                 solution.update(current_best)
-                print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget}")
+                print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget} [time: {time()-start_time:.2f}s]")
                 current_best = new_decomp
                 current_best.write_to_file("cache.tree")
+                no_improvement_count = 0
                 if LOGGING:
                     wandb.log({"best_depth": current_best.depth})
             else:
-                print(f"no improvement ({current_best.depth}) with budget: {current_budget}")
+                print(f"no improvement ({current_best.depth}) with budget: {current_budget} [time: {time()-start_time:.2f}s]")
+                no_improvement_count += 1
                 break
             print(f"#sat calls: {num_sat_calls}")
             total_sat_calls += num_sat_calls
         if budget_attempt >= len(graph): break
+        if no_improvement_count > 20:
+            print("no improvement for 20 consecutive tries, quitting")
+            break
     return current_best
 
 
@@ -1020,9 +1026,11 @@ if __name__ == '__main__':
         wandb.config.satstrat = "maxsat" if MAXSAT else "sat"
         wandb.config.partial_contraction = "depth" if PARTIAL_CONTRACT_BY_DEPTH else "size"
         wandb.config.contraction_ratio = CONTRACTION_RATIO
+        wandb.config.job_id = os.environ.get("MY_JOB_ID", -1)
+        wandb.config.task_id = os.environ.get("MY_TASK_ID", -1)
+        wandb.log({"best_depth": current_depth})
         if args.budget is None:
             wandb.config.budget = -1
-            wandb.log({"best_depth": current_depth})
         else:
             wandb.config.budget = args.budget
     best_depth = 0
@@ -1065,6 +1073,6 @@ if __name__ == '__main__':
     if os.path.isfile("cache.gr"): os.remove("cache.gr")
     if os.path.isfile("cache.tree"): os.remove("cache.tree")
     if LOGGING:
-        wandb.log(logdata)
+        wandb.log({k:v for (k,v) in logdata.items() if k != 'best_depth'})
         wandb.join()
         log_depth(basename, best_depth, logdata["time"])

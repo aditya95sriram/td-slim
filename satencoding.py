@@ -495,7 +495,7 @@ class Timer(object):
             print(self.err, file=sys.stderr)
 
 
-def solve_component(g, cli_args, debug=False):
+def solve_component(g, cli_args, debug=False, wandb=None):
     lb = 0
     ub = 0
     to = False
@@ -543,13 +543,14 @@ def solve_component(g, cli_args, debug=False):
                 return i, lb, ub, to, encoding_times, solving_times
         if rc == 10:
             ub = i - 1
+            if cli_args.logging and wandb is not None: wandb.log({"best_depth": ub})
         if rc == 20:
             lb = i
             return i, lb, ub, to, encoding_times, solving_times
     raise ValueError("should not reach here")
 
 
-def solve_max_component(g, cli_args, debug=False):
+def solve_max_component(g, cli_args, debug=False, reuse_encoding=False):
     encoding_times = list()
     solving_times = list()
     n = g.number_of_nodes()
@@ -563,10 +564,11 @@ def solve_max_component(g, cli_args, debug=False):
     else:
         loopstart = n + maxweight + 1
     with Timer(time_list=encoding_times):
-        encoding = generate_maxsat_encoding(g, loopstart)
         cnf = os.path.join(temp, instance + '_' + "max" + ".cnf")
-        with open(cnf, 'w') as ofile:
-            ofile.write(encoding.get_cnf())
+        if not reuse_encoding:
+            encoding = generate_maxsat_encoding(g, loopstart)
+            with open(cnf, 'w') as ofile:
+                ofile.write(encoding.get_cnf())
     sol = os.path.join(temp, instance + '_' + "max" + ".sol")
     solver = MAXSAT_SOLVERS[cli_args.solver]
     with Timer(time_list=solving_times):
