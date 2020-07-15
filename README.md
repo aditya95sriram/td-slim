@@ -1,5 +1,11 @@
 # SAT-based Local Improvement Method for Treedepth (TD-SLIM)
 
+
+
+[![DOI](https://zenodo.org/badge/279910906.svg)](https://zenodo.org/badge/latestdoi/279910906)
+
+
+
 Tool to improve heuristic treedepth decompositions by applying (Max)SAT-based
 methods on local substructures.
 
