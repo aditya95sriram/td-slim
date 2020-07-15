@@ -7,6 +7,7 @@ from itertools import repeat as _repeat, cycle
 import subprocess
 import signal
 import math
+import functools
 
 # optional imports for debugging and plotting
 from networkx.drawing.nx_agraph import graphviz_layout
@@ -49,6 +50,9 @@ def first(obj):
 def pick(obj):
     """randomly pick an element from object"""
     return random.sample(obj, 1)[0]
+
+
+relabelled = nx.convert_node_labels_to_integers
 
 
 def find_depth(dtree, root, return_deepest=False, ignore_weights=False):
@@ -385,7 +389,7 @@ class TD(object):
 
         if initial_size == 1:
             # push to parent
-            print(f"#### single node contraction requested, pushing up")
+            # print(f"#### single node contraction requested, pushing up")
             self.push_up(local_root)
             return
 
@@ -536,7 +540,7 @@ def simple_dfs(graph: nx.Graph, debug=False):
     return TD(dfs_tree, graph, source, depth)
 
 
-def randomized_multiprobe_dfs(graph: nx.Graph, debug=False):
+def randomized_multiprobe_dfs(graph: nx.Graph, scale=False, debug=False):
     """
     performs dfs from 10 randomly selected vertices and returns 
     the best decomposition among them as a directed tree
@@ -544,7 +548,10 @@ def randomized_multiprobe_dfs(graph: nx.Graph, debug=False):
     best_depth = 1e9
     best_decomp = None
     # todo[exp]: number of samples depends on size of graph
-    num_samples = min(10, graph.number_of_nodes())
+    num_samples = 10
+    if scale and num_samples < graph.number_of_nodes():
+        num_samples = int(graph.number_of_nodes()/10)
+    num_samples = min(num_samples, graph.number_of_nodes())
     sources = random.sample(graph.nodes, num_samples)
     for source in sources:
         dfs_tree = nx.dfs_tree(graph, source)
@@ -595,12 +602,78 @@ def random_path(graph: nx.Graph, debug=False):
     return TD(path, graph, root=nodes[0], depth=len(nodes))
 
 
+def write_edge(graph: nx.Graph, filename: str, first_label=1) -> nx.Graph:
+    graph = relabelled(graph, first_label=first_label, label_attribute="original_label")
+    n, m = graph.number_of_nodes(), graph.number_of_edges()
+    with open(filename, "w") as outfile:
+        outfile.write(f"p edge {n} {m}\n")
+        for u, v in graph.edges:
+            outfile.write(f"e {u} {v}\n")
+    return graph  # relabelled graph
+
+
+def run_bal_sep(graph: nx.Graph, variant="--max-components", tempfile: str = "temp.dgf", debug=False):
+    tempfile = os.path.abspath(tempfile)
+    if debug: print(f"writing graph to {tempfile}")
+    rgraph = write_edge(graph, tempfile)
+    cmd = ["td-bal-sep/td-bs", "-p", variant, tempfile]
+    if debug: print(f"starting subprocess: {cmd}")
+    retcode = subprocess.call(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    if retcode != 0:
+        print("nonzero return code")
+    else:
+        tree = nx.DiGraph()
+        with open(tempfile) as outfile:
+            for line in outfile:
+                if line.startswith("t"):
+                    _, _parent, _child = line.split()
+                    parent = rgraph.nodes[int(_parent)]["original_label"]
+                    child = rgraph.nodes[int(_child)]["original_label"]
+                    tree.add_edge(parent, child)
+        root = find_root(tree)
+        depth = find_depth(tree, root)
+        return TD(tree, graph, root, depth)
+
+
+def run_extreem(graph: nx.Graph, timeout=30, debug=False):
+    # tempfile = os.path.abspath(tempfile)
+    # if debug: print(f"writing graph to {tempfile}")
+    # write_gr(graph, tempfile)
+    # with open(tempfile) as f:
+    #     graphdata = f.read()
+    graphdata = f"p tdp {graph.number_of_nodes()} {graph.number_of_edges()}\n"
+    for u, v in graph.edges:
+        graphdata += f"{u} {v}\n"
+    cmd = ["timeout", "-s", "SIGTERM", str(timeout), "solvers/ExTREEm"]
+    if debug: print(f"starting subprocess: {cmd}")
+    devnull = open(os.devnull, "w")
+    proc = subprocess.run(cmd, input=graphdata, universal_newlines=True,
+                      stdout=subprocess.PIPE, stderr=devnull)
+    lines = proc.stdout.split()
+    reported_depth = int(lines.pop(0))
+    tree = nx.DiGraph()
+    for child, line in enumerate(lines, start=1):
+        parent = int(line)
+        if parent: tree.add_edge(parent, child)
+    root = find_root(tree)
+    depth = find_depth(tree, root)
+    assert reported_depth == depth, "reported depth mismatch" \
+                                    f"({reported_depth} != {depth})"
+    return TD(tree, graph, root, depth)
+
+
 HEURISTIC_FUNC = randomized_multiprobe_dfs
 HEURISTIC_FUNCS = {"simple_dfs": simple_dfs,
                    "randomized_multiprobe_dfs": randomized_multiprobe_dfs,
+                   "dfs": randomized_multiprobe_dfs,
                    "two_step_dfs": two_step_dfs,
                    "lex_path": lex_path,
-                   "random_path": random_path}
+                   "random_path": random_path,
+                   "bal_sep": run_bal_sep,
+                   "bal_sep_m": functools.partial(run_bal_sep, variant="-m"),
+                   "bal_sep_n": functools.partial(run_bal_sep, variant="-n"),
+                   "bal_sep_w": functools.partial(run_bal_sep, variant="-w")}
 
 
 # lower bound heuristic
@@ -816,7 +889,7 @@ def no_data_graph(graph):
 def read_graph(filename: str):
     base, ext = os.path.splitext(filename)
     graph = None
-    if ext == ".gr" or ext == ".edge":
+    if ext in [".gr", ".edge", ".dgf"]:
         graph = satencoding.read_edge(filename)
     elif ext == ".gml":
         graph = nx.read_gml(filename, label=None)
@@ -831,10 +904,6 @@ def read_graph(filename: str):
     else:
         raise ValueError("invalid graph file format")
     return no_data_graph(nx.Graph(graph))
-
-
-def relabelled(g):
-    return nx.convert_node_labels_to_integers(g)
 
 
 def log_depth(filename, depth, total_time):
@@ -866,18 +935,22 @@ def log_depth(filename, depth, total_time):
 
 def solve_component(graph: nx.Graph, args, solution: 'Solution'):
     global num_sat_calls, total_sat_calls
-    print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
-    current_best = HEURISTIC_FUNC(graph)
-    solution.update(current_best)
-    print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
+    # print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
+    if solution.value is None:
+        current_best = HEURISTIC_FUNC(graph)
+        solution.update(current_best)
+    else:
+        print("using solution from earlier")
+        current_best = solution.value
+    # print("random state: {:x} {:x} {:x}".format(*random.getstate()[1][:3]))
     single_budget = args.budget is not None
     if not single_budget:
         budget_range = range(5, 41, 5)
     else:
         budget_range = [args.budget]
+    githash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).strip().decode()
     write_gr(graph, "cache.gr", comments=["command: " + " ".join(sys.argv),
-                                          "githash: " + subprocess.check_output(
-                                              ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
+                                          "githash: " + githash])
     no_improvement_count = 0
     for budget_attempt in cycle(budget_range):
         for current_budget in repeat(budget_attempt, times=args.cap_tries):
@@ -888,7 +961,8 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
             except SolverInterrupt:
                 print("caught interrupt during subroutine")
                 return current_best
-            satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
+            if __debug__:
+                satencoding.verify_decomp(graph, new_decomp.tree, new_decomp.depth + 1, new_decomp.root)
             if new_decomp.depth < current_best.depth:
                 solution.update(current_best)
                 print(f"found improvement {current_best.depth}->{new_decomp.depth} with budget: {current_budget} [time: {time()-start_time:.2f}s]")
@@ -896,7 +970,7 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
                 current_best.write_to_file("cache.tree")
                 no_improvement_count = 0
                 if LOGGING:
-                    wandb.log({"best_depth": current_best.depth})
+                    wandb.log({"best_depth": current_best.depth, "improved": True})
             else:
                 print(f"no improvement ({current_best.depth}) with budget: {current_budget} [time: {time()-start_time:.2f}s]")
                 no_improvement_count += 1
@@ -904,8 +978,8 @@ def solve_component(graph: nx.Graph, args, solution: 'Solution'):
             print(f"#sat calls: {num_sat_calls}")
             total_sat_calls += num_sat_calls
         if budget_attempt >= len(graph): break
-        if no_improvement_count > 20:
-            print("no improvement for 20 consecutive tries, quitting")
+        if no_improvement_count > 100:
+            print("no improvement for 100 consecutive tries, quitting")
             break
     return current_best
 
@@ -953,7 +1027,8 @@ parser.add_argument('--draw-graphs', action='store_true',
                     help="draw intermediate graphs for debugging purposes")
 parser.add_argument('--heuristic', type=str, default="randomized_multiprobe_dfs",
                     help="heuristic function to be used for initial decomposition "
-                         "[randomized_multiprobe_dfs*, simple_dfs, two_step_dfs, lex_path, random_path")
+                         "[randomized_multiprobe_dfs/dfs*, simple_dfs, two_step_dfs, "
+                         "lex_path, random_path]")
 parser.add_argument('--deepest-leaf', action='store_true',
                     help="always pick deepest possible leaf for contraction")
 parser.add_argument('-p', '--partial-contraction', type=float, default=0.2,
@@ -963,10 +1038,14 @@ parser.add_argument('--partial-contract-by-depth', action='store_true',
                     help="partial contract by depth instead of size, reduce by 2 layers")
 parser.add_argument('-m', '--max-sat', action='store_true',
                     help="use MaxSAT instead of linear search SAT")
+parser.add_argument('--start-with', default="",
+                    help="path to directory containing heuristic solutions, if precomputed")
+parser.add_argument('--project-name', default="tdliexp1", help="wandb project name")
+
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    print("got args", args)
+    # print("got args", args)
     LOGGING = args.logging
     RANDOM_SEED = args.random_seed
     SAVEFIG = args.draw_graphs
@@ -979,6 +1058,8 @@ if __name__ == '__main__':
         PARTIAL_CONTRACTION = False
     PARTIAL_CONTRACT_BY_DEPTH = args.partial_contract_by_depth
     MAXSAT = args.max_sat
+    STARTWITH = args.start_with
+    if STARTWITH: STARTWITH = os.path.abspath(args.start_with)
     if args.instance is not None:
         filename = args.instance
     else:
@@ -988,13 +1069,36 @@ if __name__ == '__main__':
         signal.signal(signalnum, term_handler)
     start_time = time()
     input_graph = read_graph(filename)
+    basename = os.path.basename(filename)
+    base, ext = os.path.splitext(basename)
+    selfloops = list(nx.selfloop_edges(input_graph))
+    if selfloops:
+        print("found", len(selfloops), "selfloops, removing them")
+        input_graph.remove_edges_from(selfloops)
     random.seed(RANDOM_SEED)
     satencoding.VIRTUALIZE = True
     current_depth = 0
     ncomps = 0
-    for comp in nx.connected_components(input_graph):
+    heur_tds = []
+    comps = sorted(nx.connected_components(input_graph), key=len, reverse=True)
+    for comp in comps:
+        ncomps += 1
+        if len(comp) <= 1:
+            heur_tds.append(None)
+            continue
         subgraph = input_graph.subgraph(comp)
-        subtd = HEURISTIC_FUNC(subgraph)
+        if STARTWITH:
+            comp_td_path = os.path.join(STARTWITH, f"{base}.edgelist")
+            print(f"starting with precomputed decomposition {comp_td_path}")
+            tree = nx.read_edgelist(comp_td_path, create_using=nx.DiGraph, nodetype=int)
+            root = find_root(tree)
+            depth = find_depth(tree, root, ignore_weights=True)
+            subtd = TD(tree, subgraph, root, depth)
+            if __debug__:
+                satencoding.verify_decomp(subgraph, tree, depth, root)
+        else:
+            subtd = HEURISTIC_FUNC(subgraph)
+        heur_tds.append(subtd)
         if args.just_sat:
             if args.depth >= 0:
                 subtds = sat_solver(subgraph, min(args.depth, subtd.depth))
@@ -1003,18 +1107,17 @@ if __name__ == '__main__':
             current_depth = max(current_depth, max(td.depth for td in subtds))
         else:
             current_depth = max(current_depth, subtd.depth)
-        ncomps += 1
     if args.just_sat:
         print("done (just sat), depth:", current_depth)
         sys.exit()
-    basename = os.path.basename(filename)
     try:
         instance_type, instance_num = os.path.splitext(basename)[0].split("_")
         instance_num = int(instance_num)
     except ValueError:
         instance_type, instance_num = "other", 0
     if LOGGING:
-        wandb.init(project="tdliexp1", tags=["cluster", instance_type],
+        projectname = args.project_name
+        wandb.init(project=projectname, tags=["cluster", instance_type],
                    reinit=True)
         wandb.config.instance_num = instance_num
         wandb.config.filename = basename
@@ -1028,23 +1131,25 @@ if __name__ == '__main__':
         wandb.config.contraction_ratio = CONTRACTION_RATIO
         wandb.config.job_id = os.environ.get("MY_JOB_ID", -1)
         wandb.config.task_id = os.environ.get("MY_TASK_ID", -1)
+        wandb.config.heuristic = args.heuristic
         wandb.log({"best_depth": current_depth})
         if args.budget is None:
             wandb.config.budget = -1
         else:
             wandb.config.budget = args.budget
     best_depth = 0
-    icomp = 1
+    icomp = 0
     solutions = []
     for comp in sorted(nx.connected_components(input_graph), key=len, reverse=True):
-        print(f"working on comp {icomp}/{ncomps}, size:{len(comp)}")
+        print(f"working on comp {icomp+1}/{ncomps}, size:{len(comp)}")
         icomp += 1
-        if len(comp) <= best_depth:
+        if len(comp) <= best_depth or len(comp) <= 1:
             print("skipping comp")
             continue
         subgraph = input_graph.subgraph(comp)
-        random.seed(RANDOM_SEED)
         solution = Solution()
+        solution.value = heur_tds[icomp-1]
+        # random.seed(RANDOM_SEED)
         try:
             subtd = solve_component(subgraph, args, solution)
         except SolverInterrupt:
@@ -1062,14 +1167,18 @@ if __name__ == '__main__':
                                                                            start_depth=current_depth,
                                                                            **logdata))
     print("* total sat calls: {total_sat_calls}\ttotal time: {time:.3f}s".format(**logdata))
+    githash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).strip().decode()
     write_gr(input_graph, "input.gr", comments=[f"file: {basename}",
                                                 "command: " + " ".join(sys.argv),
-                                                "githash: " + subprocess.check_output(
-                                                    ['git', 'rev-parse', '--short', 'HEAD']).strip().decode()])
+                                                "githash: " + githash])
+    print("verifying...")
     for i, sol in enumerate(solutions, start=1):
         sol.write_to_file(f"sol{i}.tree")
-    s = subprocess.check_output(["./verify", "input.gr", "sol1.tree"])
-    print("\nExternal verification:", s.decode())
+        component = sol.original_graph
+        if len(component) <= 1: continue
+        write_gr(component, f"input{i}.gr")
+        s = subprocess.check_output(["./verify", f"input{i}.gr", f"sol{i}.tree"])
+        print(f"\nExternal verification({i}):", s.decode())
     if os.path.isfile("cache.gr"): os.remove("cache.gr")
     if os.path.isfile("cache.tree"): os.remove("cache.tree")
     if LOGGING:
