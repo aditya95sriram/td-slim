@@ -1,0 +1,13 @@
+{
+    "description": "SAT-based Local Improvement Method for Treedepth", 
+    "license": "MIT", 
+    "title": "aditya95sriram/td-slim: Public Release", 
+    "upload_type": "software", 
+    "publication_date": "2020-07-15", 
+    "creators": [
+        {
+            "name": "P. R. Vaidyanathan"
+        }
+    ], 
+    "access_right": "open"
+}
