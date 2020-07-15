@@ -6,3 +6,4 @@ wandb/
 *.log
 *.err
 figs/
+td-bal-sep

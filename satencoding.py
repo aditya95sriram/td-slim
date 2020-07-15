@@ -12,8 +12,15 @@ import matplotlib.pyplot as plt
 import signal
 
 from typing import Union
-from pysat.examples.rc2 import RC2
-from pysat.formula import WCNF
+
+
+# optional dependency pysat+rc2
+PYSATDISABLED = False
+try:
+    from pysat.examples.rc2 import RC2
+    from pysat.formula import WCNF
+except ImportError:
+    PYSATDISABLED = True
 
 
 VIRTUALIZE = False
@@ -285,6 +292,8 @@ def run_uwrmaxsat(cnffile, solfile, cli_args, debug=False):
 
 def run_rc2(cnffile, solfile, cli_args, debug=False):
     """solve maxsat using RC2"""
+    if PYSATDISABLED:
+        raise NotImplementedError("required package pysat not found")
     formula = WCNF(from_file=cnffile)
     rc2 = RC2(formula)
     model = rc2.compute()
