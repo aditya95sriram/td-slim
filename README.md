@@ -87,11 +87,11 @@ same as the PACE challenge.
 | Instance  | ExTREEm | TD-SLIM | PACE best^ |
 |-----------|---------|---------|------------|
 | exact_137 |      59 |      58 |         58 |
-| heur_067  |     106 |     105 |        106 |
-| heur_079  |     450 |     449 |        450 |
+| heur_067  |     106 | **105** |        106 |
+| heur_079  |     450 | **449** |        450 |
 | heur_095  |      12 |      11 |         11 |
 | heur_097  |     223 |     221 |        220 |
-| heur_103  |     146 |     145 |        146 |
+| heur_103  |     146 | **145** |        146 |
 
 ^ - Best depth computed by any of the 55 heuristic solvers
 
