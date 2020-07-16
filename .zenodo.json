@@ -6,7 +6,13 @@
     "publication_date": "2020-07-15", 
     "creators": [
         {
-            "name": "P. R. Vaidyanathan"
+            "name": "P. R., Vaidyanathan",
+            "affiliation": "Algorithms and Complexity Group, TU Wien, Austria",
+            "orcid": "0000-0002-3101-2085"
+        },
+        {
+            "name": "Szeider, Stefan",
+            "affiliation": "Algorithms and Complexity Group, TU Wien, Austria"
         }
     ], 
     "access_right": "open"
