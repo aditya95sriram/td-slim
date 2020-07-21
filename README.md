@@ -84,13 +84,41 @@ the `--start-with` switch indicating the directory containing the decomposition.
 
 ## Results
 
-We evaluated the performance of running TD-SLIM on top of the 
+> TD-SLIM(X) denotes the algorithm obtained by running TD-SLIM on top of 
+> the heuristic solution provided by algorithm X
+
+We consider two algorithms &ndash; TD-SLIM(DFS) and TD-SLIM(Sep), where
+DFS is a randomized variant of the naive DFS heuristic 
+by Villaamil [[1](#villaamil2017treedepth)] and Sep is one of the
+separator-based heuristics from [[1](#villaamil2017treedepth)]
+whose implementation was kindly provided 
+by Tobias Oelschlägel [[2](#oelschlagel2014treewidth)].
+
+We evaluated the performance on the 200 publicly available instances from the
+PACE Challenge ([100 exact&downarrow;][4] and [100 heuristic&downarrow;][5]).
+Out of the 200 instances, we filtered out 58 instances for which the 
+heuristics were unable to compute a solution in 2 hours.
+We compared TD-SLIM(DFS) and TD-SLIM(Sep) with the [best known values][6] from
+the PACE Challenge, by running TD-SLIM for 30 minutes.
+&Delta; denotes the depth computed by
+TD-SLIM(X) minus the best known depth from the PACE Challenge.
+
+|                | TD-SLIM(DFS) | TD-SLIM(Sep) |
+|----------------|-------------:|-------------:|
+| median &Delta; |            1 |            3 |
+| &Delta;=0      |           53 |           41 |
+| &Delta;&leq;1  |           73 |           58 |
+| &Delta;&leq;5  |           95 |           88 |
+| &Delta;&leq;10 |          107 |          101 |
+
+
+Further, we evaluated the performance of running TD-SLIM on top of the 
 [PACE Challenge 2020][2] winning heuristic - [ExTREEm][3].
 We ran the heuristic for 15 minutes and then TD-SLIM on top of the heuristic 
 provided solution for 15 minutes, making the total time limit 30 minutes, 
 same as the PACE challenge.
 
-| Instance  | ExTREEm | TD-SLIM | PACE best^ |
+| Instance  | ExTREEm | TD-SLIM | PACE best<sup>*</sup> |
 |-----------|---------|---------|------------|
 | exact_137 |      59 |      58 |         58 |
 | heur_067  |     106 | **105** |        106 |
@@ -99,9 +127,24 @@ same as the PACE challenge.
 | heur_097  |     223 |     221 |        220 |
 | heur_103  |     146 | **145** |        146 |
 
-^ - Best depth computed by any of the 55 heuristic solvers
+<sup>*</sup> - Best depth computed by any of the 55 heuristic solvers, 
+or in the case of `exact_137`, the optimal treedepth
+
+
+## References
+
+1. <a name="villaamil2017treedepth">Villaamil, F. S. (2017). 
+_About Treedepth and Related Notions_ 
+(Doctoral dissertation, RWTH Aachen University).</a>
+2. <a name="oelschlagel2014treewidth">Oelschlägel, T. (2014). 
+_Treewidth from Treedepth_ 
+(Bachelor's Thesis, RWTH Aachen University).</a>
+
 
 
 [1]: https://pacechallenge.org/2020/verify.cpp
 [2]: https://pacechallenge.org/2020/results/#heuristic-track
-[3]: https://github.com/swacisko/pace-2020
+[3]: https://github.com/swacisko/pace-2020 
+[4]: https://pacechallenge.org/files/pace2020-exact-public.tgz
+[5]: https://pacechallenge.org/files/pace2020-heur-public.tgz
+[6]: https://www.optil.io/optilion/problem/3177#tab-4
